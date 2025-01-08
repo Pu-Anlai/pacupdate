@@ -1,16 +1,20 @@
 #!/usr/bin/env python
 
+import asyncio
 import os
 import shlex
 import shutil
 import subprocess
-import pyalpm
-import feedparser
-from time import time
 from dataclasses import dataclass
-from urllib.request import urlopen
-from urllib.error import URLError
+from html.parser import HTMLParser
 from tempfile import NamedTemporaryFile
+from time import time
+from typing import NoReturn, TypedDict
+from urllib.error import URLError
+from urllib.request import urlopen
+
+import feedparser
+import pyalpm
 
 TERMCOLORS = {
     "red": "\033[31m",
@@ -20,6 +24,57 @@ TERMCOLORS = {
     "bold": "\033[1m",
     "default": "\033[0m",
 }
+
+
+class UpdateInfo(TypedDict, total=False):
+    pm_updates: int
+    aur_updates: int
+    git_updates: int
+
+
+class FeedPrinter(HTMLParser):
+    """Cleans up HTML tags and does nothing else."""
+
+    def __init__(self):
+        self.text = ""
+        super().__init__()
+
+    def handle_data(self, data: str):
+        self.text += data
+
+
+@dataclass
+class Config:
+    """Config object that holds settings set in the environment as well as temporary information."""
+
+    mirrorlist_url: str = (
+        os.getenv("PACUPDATE_MIRRORLIST_URL")
+        or "https://archlinux.org/mirrorlist/?country=all&protocol=http&protocol=https&ip_version=4"
+    )
+    rss_feed_url: str = (
+        os.getenv("PACUPDATE_RSS_FEED_URL") or "https://archlinux.org/feeds/news/"
+    )
+    mirrorlist_interval: int = getenv_int("PACUPDATE_MIRRORLIST_INTERVAL") or 14
+    mirrorlist_path: str = "/etc/pacman.d/mirrorlist"
+    curl_timeout: int = getenv_int("PACUPDATE_CURL_TIMEOUT") or 20
+    git_interval: int = getenv_int("PACUPDATE_GIT_INTERVAL") or 14
+    _pm_db: pyalpm.DB | bool = False
+    pm_db_root: str = os.getenv("PACUPDATE_PM_ROOT") or "/"
+    pm_db_path: str = os.getenv("PACUPDATE_PM_DBPATH") or "/var/lib/pacman"
+
+    @property
+    def pm_db(self) -> pyalpm.DB:
+        if not self._pm_db:
+            self.init_pm_db()
+        return self._pm_db
+
+    def init_pm_db(self):
+        """Initialize the pacman database held in the pm_db field."""
+        try:
+            h = pyalpm.Handle(self.pm_db_root, self.pm_db_path)
+            self._pm_db = h.get_localdb()
+        except pyalpm.error as e:
+            die(str(e), exit_code=1)
 
 
 def getenv_int(env: str) -> int | None:
@@ -41,63 +96,44 @@ def fancy_echo(
     print(f"{msg_color}{msg}{TERMCOLORS['default']}")
 
 
+def y_or_n(prompt: str) -> bool:
+    """Prompt the user with the msg PROMPT and return a bool representing the answer."""
+    while True:
+        response = input(f"{prompt} [Y/n]")
+        if response.lower() == "y" or response == "":
+            return True
+        elif response.lower() == "n":
+            return False
+
+
 def headline_echo(msg: str, color: str = TERMCOLORS["green"]):
     fancy_echo(msg, prefix="==>", prefix_color=color)
 
 
-def die(msg: str, exit_code: int = 0):
+def die(msg: str, exit_code: int = 0) -> NoReturn:
     """Print out msg and quit the program with exit code 1."""
     fancy_echo(msg, prefix_color=TERMCOLORS["red"])
     exit(exit_code)
 
 
-@dataclass
-class Config:
-    """Config object that holds settings set in the environment."""
-
-    mirrorlist_url: str = (
-        os.getenv("PACUPDATE_MIRRORLIST_URL")
-        or "https://archlinux.org/mirrorlist/?country=all&protocol=http&protocol=https&ip_version=4"
-    )
-    rss_feed_url: str = (
-        os.getenv("PACUPDATE_RSS_FEED_URL") or "https://archlinux.org/feeds/news/"
-    )
-    mirrorlist_interval: int = getenv_int("PACUPDATE_MIRRORLIST_INTERVAL") or 14
-    mirrorlist_path: str = "/etc/pacman.d/mirrorlist"
-    curl_timeout: int = getenv_int("PACUPDATE_CURL_TIMEOUT") or 20
-    git_interval: int = getenv_int("PACUPDATE_GIT_INTERVAL") or 14
-    pm_db: pyalpm.DB | bool = False
-    pm_db_root: str = os.getenv("PACUPDATE_PM_ROOT") or "/"
-    pm_db_path: str = os.getenv("PACUPDATE_PM_DBPATH") or "/var/lib/pacman"
-
-    def init_pm_db(self):
-        """Initialize the pacman database held in the pm_db field."""
-        try:
-            h = pyalpm.Handle(self.pm_db_root, self.pm_db_path)
-            self.pm_db = h.get_localdb()
-        except pyalpm.error as e:
-            die(str(e), exit_code=1)
-
-
-def check_for_sudo():
+def check_for_programs():
     """Checks whether sudo executable is present on the system."""
-    if not shutil.which("sudo"):
-        die("sudo not found on system. Exiting...", exit_code=1)
+    for p in ["sudo", "git", "auracle"]:
+        if not shutil.which(p):
+            die(f"{p} not found in path. Exiting...", exit_code=1)
+    # also check if auracle needs to be rebuilt.
+    sp = subprocess.Popen(shlex.split("auracle --version"), stderr=subprocess.PIPE)
+    if not sp.returncode == 0:
+        fancy_echo(
+            f"Attempting to run auracle returned the following:\n{sp.stderr}",
+            prefix_color=TERMCOLORS["red"],
+        )
+        y_or_n("Do you want to rebuild auracle?")
 
 
-def check_mirrorlist(conf: Config):
-    """Update pacman mirrorlist if it is older than the configured threshold."""
-    headline_echo("Checking if mirrorlist is outdated...", color=TERMCOLORS["green"])
-    if not mirrorlist_uptodate(conf):
-        fancy_echo("Mirrorlist out-of-date, fetching new one...")
-        update_mirrorlist(conf)
-    else:
-        fancy_echo("Mirrorlist up-to-date.")
-
-
-def call_shell_cmd(cmd: str):
-    """Run shell command CMD."""
-    if subprocess.call(shlex.split(cmd)) > 0:
+def call_shell_cmd(cmd: str, stdout=None):
+    """Run shell command CMD without printing any of its output."""
+    if subprocess.call(shlex.split(cmd), stdout=stdout) > 0:
         die(f'Error running command "{cmd}".', exit_code=1)
 
 
@@ -112,13 +148,18 @@ def update_mirrorlist(conf: Config):
         die(f"Error downloading from {conf.mirrorlist_url}", exit_code=1)
 
     # backup mirrorlist
-    call_shell_cmd(f"sudo cp {conf.mirrorlist_path} {conf.mirrorlist_path}.backup")
+    call_shell_cmd(
+        f"sudo cp {conf.mirrorlist_path} {conf.mirrorlist_path}.backup",
+        stdout=subprocess.DEVNULL,
+    )
 
     tempfile = NamedTemporaryFile(mode="w", delete=False)
     with tempfile as f:
-        f.writelines(map(lambda x: x[1:] if x.startswith("#") else x, mlist_raw))  # type: ignore
+        f.writelines(map(lambda x: x[1:] if x.startswith("#") else x, mlist_raw))
 
-    call_shell_cmd(f"sudo cp {tempfile.name} {conf.mirrorlist_path}")
+    call_shell_cmd(
+        f"sudo cp {tempfile.name} {conf.mirrorlist_path}", stdout=subprocess.DEVNULL
+    )
 
     os.unlink(tempfile.name)
 
@@ -136,25 +177,86 @@ def get_pmdb_update_time(db: pyalpm.DB) -> int:
     return pkg.installdate
 
 
+def get_mailing_list_entries(conf: Config) -> list[feedparser.util.FeedParserDict]:
+    """Return a list of any mailing list entries created after the most recent update."""
+    rss = feedparser.parse(conf.rss_feed_url)
+    db_update_time = get_pmdb_update_time(conf.pm_db)
+    return list(filter(lambda x: x.published_parsed > db_update_time, rss.entries))
+
+
+def ensure_str_from_feed(feed) -> str:
+    if not isinstance(feed, str):
+        raise TypeError(f"Expected string from RSS feed but got:\n{feed}")
+    else:
+        return feed
+
+
+def print_feed_entries(entries: list[feedparser.util.FeedParserDict]):
+    """Print out all entries in ENTRIES in a clean way."""
+    f = FeedPrinter()
+    for e in entries:
+        f.feed(ensure_str_from_feed(e.title))
+        fancy_echo(f.text)
+        f.text = ""
+        f.feed(ensure_str_from_feed(e.summary))
+        print(f.text + "\n")
+        f.text = ""
+        if not y_or_n("Continue?"):
+            exit()
+
+
+def get_update_pkg_count() -> int:
+    """Return number of pacman packages with available updates."""
+    sp = subprocess.Popen(
+        shlex.split("pacman -Qu"), stdout=subprocess.PIPE, stderr=subprocess.STDOUT
+    )
+    if not sp.stdout:
+        die('Error running command "pacman -Qu".', exit_code=1)
+    else:
+        return len(sp.stdout.read().split(b"\n"))
+
+
+def check_mirrorlist(conf: Config):
+    """Update pacman mirrorlist if it is older than the configured threshold."""
+    headline_echo("Checking if mirrorlist is outdated...", color=TERMCOLORS["green"])
+    if not mirrorlist_uptodate(conf):
+        fancy_echo("Mirrorlist out-of-date, fetching new one...")
+        update_mirrorlist(conf)
+    else:
+        fancy_echo("Mirrorlist up-to-date.")
+
+
 def check_mailinglist(conf: Config):
     """Check the Arch mailing list for any updates."""
     headline_echo("Checking for news in the Arch mailinglist since the last update...")
 
-    if not conf.pm_db:
-        conf.init_pm_db()
-
-    rss = feedparser.parse(conf.rss_feed_url)
-    db_update_time = get_pmdb_update_time(conf.pm_db)
-    new_entries = filter(lambda x: x.published_parsed > db_update_time, rss.entries)
-    n_e_len = len(list(new_entries))
+    new_entries = get_mailing_list_entries(conf)
+    n_e_len = len(new_entries)
 
     fancy_echo(f"{n_e_len} news item{'s'[:n_e_len^1]}")
     if n_e_len == 0:
         return
+    else:
+        print_feed_entries(new_entries)
+
+
+def collect_updates(updates: UpdateInfo):
+    """Checks for updates from the pacman repos."""
+    headline_echo("Checking for updates in the pacman repos...")
+    # this may require user input, so don't do it asynchronously:
+    call_shell_cmd("sudo pacman -Sy", stdout=subprocess.DEVNULL)
+    # and this should be pretty much instantaneous anyway:
+    updates["pm_updates"] = get_update_pkg_count()
+    if updates["pm_updates"] > 0:
+        fancy_echo(f"{updates} package updates available.")
+        call_shell_cmd("sudo pacman -Syu")
+    else:
+        fancy_echo("All packages up-to-date.")
 
 
 if __name__ == "__main__":
-    check_for_sudo()
+    check_for_programs()
     conf = Config()
+    updates = UpdateInfo()
     check_mirrorlist(conf)
     check_mailinglist(conf)
