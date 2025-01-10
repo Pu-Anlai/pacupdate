@@ -250,18 +250,39 @@ def check_mailinglist(conf: Config):
         print_feed_entries(new_entries)
 
 
-def collect_updates(updates: UpdateInfo):
-    """Checks for updates from the pacman repos."""
+def collect_outdated_git_packages():
+    """Asynchronously check for updates for VCS (git) packages."""
+    pass  # TODO
+
+
+def check_for_git_pkg_update(conf: Config, pkg: str) -> bool:
+    """Return True/False depending on whether PKG should be updated."""
+    # check first if the most recent update is older than git_interval in the config allows
+    interval_secs = conf.git_interval * 60 * 60 * 24
+    if conf.pm_db.get_pkg("pkg").installdate + interval_secs < time():
+        return False
+    # TODO
+
+
+def gather_update_info(updates: UpdateInfo):
+    """Checks for updates from available sources."""
     headline_echo("Checking for updates in the pacman repos...")
-    # this may require user input, so don't do it asynchronously:
     call_shell_cmd("sudo pacman -Sy", stdout=subprocess.DEVNULL)
-    # and this should be pretty much instantaneous anyway:
-    updates["pm_updates"] = get_update_pkg_count()
-    if updates["pm_updates"] > 0:
-        fancy_echo(f"{updates} package updates available.")
-        call_shell_cmd("sudo pacman -Syu")
-    else:
-        fancy_echo("All packages up-to-date.")
+    updates["pm_updates"] = get_stdout_lines("pacman -Quq")
+    print_package_info(updates["pm_updates"])
+
+    headline_echo("Checking for updates in the AUR...")
+    updates["aur_updates"] = get_stdout_lines("auracle outdated --quiet")
+    # remove AUR updates that have been moved to official repos
+    updates["aur_updates"] = [
+        x for x in updates["aur_updates"] if x not in updates["pm_updates"]
+    ]
+    print_package_info(updates["aur_updates"], source="AUR")
+
+    headline_echo("Checking for updates for git-based packages...")
+    git_pkgs = [x for x in get_stdout_lines("pacman -Qq") if x.endswith("-git")]
+    # get rid of pkgs already updated covered in the aur_update list right away
+    git_pkgs = [x for x in git_pkgs if x not in updates["aur_updates"]]
 
 
 if __name__ == "__main__":
