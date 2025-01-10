@@ -131,8 +131,18 @@ def check_for_programs():
         y_or_n("Do you want to rebuild auracle?")
 
 
+def print_package_info(pkgs: list[str], source: str = ""):
+    """Print info on number of available packages in PKGS."""
+    source = source + " " if source else source
+    updates = len(pkgs)
+    if updates > 0:
+        fancy_echo(f"{updates} {source}package updates available.")
+    else:
+        fancy_echo("All packages up-to-date.")
+
+
 def call_shell_cmd(cmd: str, stdout=None):
-    """Run shell command CMD without printing any of its output."""
+    """Run shell command CMD."""
     if subprocess.call(shlex.split(cmd), stdout=stdout) > 0:
         die(f'Error running command "{cmd}".', exit_code=1)
 
