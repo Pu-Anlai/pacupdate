@@ -26,10 +26,18 @@ TERMCOLORS = {
 }
 
 
+def getenv_int(env: str) -> int | None:
+    """Cast env to int if possible return None otherwise"""
+    try:
+        return int(os.getenv(env, ""))
+    except ValueError:
+        return None
+
+
 class UpdateInfo(TypedDict, total=False):
-    pm_updates: int
-    aur_updates: int
-    git_updates: int
+    pm_updates: list[str]
+    aur_updates: list[str]
+    git_updates: list[str]
 
 
 class FeedPrinter(HTMLParser):
@@ -75,14 +83,6 @@ class Config:
             self._pm_db = h.get_localdb()
         except pyalpm.error as e:
             die(str(e), exit_code=1)
-
-
-def getenv_int(env: str) -> int | None:
-    """Cast env to int if possible return None otherwise"""
-    try:
-        return int(os.getenv(env, ""))
-    except ValueError:
-        return None
 
 
 def fancy_echo(
