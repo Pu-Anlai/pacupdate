@@ -106,7 +106,8 @@ def y_or_n(prompt: str) -> bool:
             return False
 
 
-def headline_echo(msg: str, color: str = TERMCOLORS["green"]):
+def headline_echo(msg: str, color: str = TERMCOLORS["green"], leading_nl: bool = True):
+    msg = f"\n{msg}" if leading_nl else msg
     fancy_echo(msg, prefix="==>", prefix_color=color)
 
 
@@ -246,7 +247,11 @@ def get_stdout_lines(cmd: str) -> list[str]:
 
 def check_mirrorlist(conf: Config):
     """Update pacman mirrorlist if it is older than the configured threshold."""
-    headline_echo("Checking if mirrorlist is outdated...", color=TERMCOLORS["green"])
+    headline_echo(
+        "Checking if mirrorlist is outdated...",
+        color=TERMCOLORS["green"],
+        leading_nl=False,
+    )
     if not mirrorlist_uptodate(conf):
         fancy_echo("Mirrorlist out-of-date, fetching new one...")
         update_mirrorlist(conf)
