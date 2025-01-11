@@ -176,7 +176,7 @@ def update_mirrorlist(conf: Config):
 
 def mirrorlist_uptodate(conf: Config) -> bool:
     """Returns False if mirrorlist is outdated."""
-    mlist_mtime = os.path.getmtime(os.path.join("etc", "pacman.d", "mirrorlist"))
+    mlist_mtime = os.path.getmtime(os.path.join("/", "etc", "pacman.d", "mirrorlist"))
     days_since = (time() - mlist_mtime) / 60 / 60 / 24
     return days_since <= conf.mirrorlist_interval
 
