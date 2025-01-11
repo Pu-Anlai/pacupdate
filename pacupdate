@@ -8,12 +8,13 @@ import subprocess
 from dataclasses import dataclass
 from html.parser import HTMLParser
 from tempfile import NamedTemporaryFile
-from time import time
+from time import time, time_ns
 from typing import NoReturn, TypedDict
 from urllib.error import URLError
 from urllib.request import urlopen
 import feedparser
 import pyalpm
+from calendar import timegm
 
 TERMCOLORS = {
     "red": "\033[31m",
@@ -162,16 +163,20 @@ def update_mirrorlist(conf: Config):
         stdout=subprocess.DEVNULL,
     )
 
-    tempfile = NamedTemporaryFile(mode="w", delete=False)
-    with tempfile as f:
-        f.writelines(map(lambda x: x[1:] if x.startswith("#") else x, mlist_raw))
+    tmpfile = NamedTemporaryFile(mode="w", delete=False)
+    with tmpfile as f:
+        # add newline to all lines
+        lines = map(lambda x: f"{x}\n", mlist_raw)
+        # remove first hashtag character from all lines that have one
+        lines = map(lambda x: x[1:] if x.startswith("#") else x, lines)
+        f.writelines(lines)
 
     try:
         call_shell_cmd(
-            f"sudo cp {tempfile.name} {conf.mirrorlist_path}", stdout=subprocess.DEVNULL
+            f"sudo cp {tmpfile.name} {conf.mirrorlist_path}", stdout=subprocess.DEVNULL
         )
     finally:
-        os.unlink(tempfile.name)
+        os.unlink(tmpfile.name)
 
 
 def mirrorlist_uptodate(conf: Config) -> bool:
@@ -191,7 +196,21 @@ def get_mailing_list_entries(conf: Config) -> list[feedparser.util.FeedParserDic
     """Return a list of any mailing list entries created after the most recent update."""
     rss = feedparser.parse(conf.rss_feed_url)
     db_update_time = get_pmdb_update_time(conf.pm_db)
-    return list(filter(lambda x: x.published_parsed > db_update_time, rss.entries))
+    try:
+        # retrieve all entries that were published after the last pacman update
+        entries = filter(
+            lambda x: timegm(x.published_parsed) > db_update_time, rss.entries
+        )
+        return list(entries)
+    except Exception as e:
+        fancy_echo(
+            f"There was a an error parsing the Arch RSS feed:\n{e}.",
+            prefix_color=TERMCOLORS["red"],
+        )
+        if y_or_n("Do you want to continue?"):
+            return list()
+        else:
+            exit(1)
 
 
 def ensure_str_from_feed(feed) -> str:
@@ -277,15 +296,15 @@ async def get_git_source_url(pkg: str) -> str | None:
         print(f"Error retrieving PKGBUILD for {pkg}:\n{stderr.decode()}")
         return None
 
-    with NamedTemporaryFile(mode="w", delete=False) as tmp:
-        tmp.writelines(stdout.decode())
-        pkgbuild_path = tmp.name
+    tmpfile = NamedTemporaryFile(mode="w", delete=False)
+    with tmpfile as f:
+        f.writelines(stdout.decode())
 
     try:
         proc = await asyncio.create_subprocess_exec(
             "sh",
             "-c",
-            f'source {pkgbuild_path} && set -- $source && echo "$@"',
+            f'source {tmpfile.name} && set -- $source && echo "$@"',
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
@@ -297,7 +316,7 @@ async def get_git_source_url(pkg: str) -> str | None:
             return None
 
     finally:
-        os.unlink(pkgbuild_path)
+        os.unlink(tmpfile.name)
 
     git_url = [x for x in stdout.decode().split("\n") if x.startswith("git+")]
     if len(git_url) > 1:
@@ -346,7 +365,7 @@ def check_for_git_pkg_update(conf: Config, pkg: pyalpm.Package) -> bool:
     # check first if the most recent update is older than git_interval in the config allows
     interval_secs = conf.git_interval * 60 * 60 * 24
     rev_id = retrieve_pkg_revid(pkg)
-    if pkg.installdate + interval_secs < time():
+    if pkg.installdate + interval_secs < time_ns():
         return False
     # if we were unable to determine the revision id, schedule an update (bit opinionated)
     elif not rev_id:
