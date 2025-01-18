@@ -2,14 +2,15 @@
 
 import os
 import asyncio
+from configparser import ConfigParser
 import shlex
 import shutil
 import subprocess
-from dataclasses import dataclass
+from dataclasses import dataclass, make_dataclass
 from html.parser import HTMLParser
-from tempfile import NamedTemporaryFile
-from time import time, time_ns
-from typing import NoReturn, TypedDict
+import tempfile
+from time import time
+from typing import Iterator, NoReturn, TypedDict
 from urllib.error import URLError
 from urllib.request import urlopen
 import feedparser
@@ -34,7 +35,7 @@ def getenv_int(env: str) -> int | None:
         return None
 
 
-class UpdateInfo(TypedDict, total=False):
+class UpdateInfo(TypedDict):
     pm_updates: list[str]
     aur_updates: list[str]
     git_updates: list[str]
@@ -66,21 +67,63 @@ class Config:
     mirrorlist_path: str = "/etc/pacman.d/mirrorlist"
     curl_timeout: int = getenv_int("PACUPDATE_CURL_TIMEOUT") or 20
     git_interval: int = getenv_int("PACUPDATE_GIT_INTERVAL") or 14
-    _pm_db: pyalpm.DB | bool = False
+    _pm_local_db: pyalpm.DB | bool = False
+    _pm_sync_dbs: pyalpm.DB | bool = False
+    _pm_handle: pyalpm.Handle | bool = False
     pm_db_root: str = os.getenv("PACUPDATE_PM_ROOT") or "/"
     pm_db_path: str = os.getenv("PACUPDATE_PM_DBPATH") or "/var/lib/pacman"
 
-    @property
-    def pm_db(self) -> pyalpm.DB:
-        if not self._pm_db:
-            self.init_pm_db()
-        return self._pm_db
+    def __init__(self):
+        self.git_interval_secs = self.git_interval * 60 * 60 * 24
 
-    def init_pm_db(self):
+    @property
+    def pm_handle(self) -> pyalpm.Handle:
+        if not self._pm_handle:
+            self.init_pm_handle()
+        return self._pm_handle
+
+    @property
+    def pm_local_db(self) -> pyalpm.DB:
+        if not self._pm_local_db:
+            self.init_pm_local_db()
+        return self._pm_local_db
+
+    @property
+    def pm_sync_dbs(self) -> pyalpm.DB:
+        if not self._pm_sync_dbs:
+            self.init_pm_sync_db()
+        return self._pm_sync_dbs
+
+    def init_pm_handle(self):
+        try:
+            self._pm_handle = pyalpm.Handle(self.pm_db_root, self.pm_db_path)
+        except pyalpm.error as e:
+            die(str(e), exit_code=1)
+
+    def init_pm_local_db(self):
         """Initialize the pacman database held in the pm_db field."""
         try:
-            h = pyalpm.Handle(self.pm_db_root, self.pm_db_path)
-            self._pm_db = h.get_localdb()
+            self._pm_local_db = self.pm_handle.get_localdb()
+        except pyalpm.error as e:
+            die(str(e), exit_code=1)
+
+    def init_pm_sync_db(self):
+        try:
+            cp = ConfigParser(allow_no_value=True)
+            cp.read(os.path.join("/", "etc", "pacman.conf"))
+        except FileNotFoundError as e:
+            die(str(e), exit_code=1)
+
+        repos = cp.sections()
+        try:
+            repos.remove("options")
+        except ValueError:
+            pass
+
+        try:
+            for r in repos:
+                self.pm_handle.register_syncdb(r, 0)
+            self._pm_sync_dbs = self.pm_handle.get_syncdb()
         except pyalpm.error as e:
             die(str(e), exit_code=1)
 
@@ -107,8 +150,8 @@ def y_or_n(prompt: str) -> bool:
 
 
 def headline_echo(msg: str, color: str = TERMCOLORS["green"], leading_nl: bool = True):
-    msg = f"\n{msg}" if leading_nl else msg
-    fancy_echo(msg, prefix="==>", prefix_color=color)
+    prefix = "\n==>" if leading_nl else "==>"
+    fancy_echo(msg, prefix=prefix, prefix_color=color)
 
 
 def die(msg: str, exit_code: int = 0) -> NoReturn:
@@ -164,7 +207,7 @@ def update_mirrorlist(conf: Config):
         stdout=subprocess.DEVNULL,
     )
 
-    tmpfile = NamedTemporaryFile(mode="w", delete=False)
+    tmpfile = tempfile.NamedTemporaryFile(mode="w", delete=False)
     with tmpfile as f:
         # add newline to all lines
         lines = map(lambda x: f"{x}\n", mlist_raw)
@@ -196,7 +239,7 @@ def get_pmdb_update_time(db: pyalpm.DB) -> int:
 def get_mailing_list_entries(conf: Config) -> list[feedparser.util.FeedParserDict]:
     """Return a list of any mailing list entries created after the most recent update."""
     rss = feedparser.parse(conf.rss_feed_url)
-    db_update_time = get_pmdb_update_time(conf.pm_db)
+    db_update_time = get_pmdb_update_time(conf.pm_local_db)
     try:
         # retrieve all entries that were published after the last pacman update
         entries = filter(
@@ -238,8 +281,10 @@ def print_feed_entries(entries: list[feedparser.util.FeedParserDict]):
 def get_stdout_lines(cmd: str) -> list[str]:
     """Return a list of the lines printed to stdout by CMD."""
     sp = subprocess.run(shlex.split(cmd), capture_output=True)
-    if not sp.stdout:
-        die(f'Error running command "{cmd}".', exit_code=1)
+    if sp.stdout is None:
+        die(f'Error running command "{cmd}:\n{sp.stderr}".', exit_code=1)
+    elif len(sp.stdout) == 0:
+        return list()
     else:
         pkgs = map(str, sp.stdout.split(b"\n"))
         return list(pkgs)
@@ -273,18 +318,42 @@ def check_mailinglist(conf: Config):
         print_feed_entries(new_entries)
 
 
-def collect_outdated_git_packages():
-    """Asynchronously check for updates for VCS (git) packages."""
-    pass  # TODO
+def get_foreign_packages(conf: Config) -> Iterator[pyalpm.Package]:
+    """Get a list of all foreign packages. Equivalent of running `pacman -Qm`"""
+    for p in conf.pm_local_db.pkgcache:
+        for db in conf.pm_sync_dbs:
+            if db.get_pkg(p.name) is not None:
+                break
+        else:
+            yield p
+
+
+def get_aur_pkgs_new_build_req(conf: Config, updates: UpdateInfo) -> list[str]:
+    """Return a list of all AUR packages that require re-compilation because of
+    updates in the official repos."""
+    if "pm_updates" not in updates.keys():
+        return []
+    deps = {}
+    for p in get_foreign_packages(conf):
+        for d in (*p.depends, *p.optdepends):
+            if d not in deps.keys():
+                deps[d] = []
+            deps[d].append(p)
+
+    rebuild_pkgs = set()
+    for pkg in (pkg for pkg in updates["pm_updates"] if pkg in deps.keys()):
+        rebuild_pkgs.add(*deps[pkg])
+    return list(rebuild_pkgs)
 
 
 def retrieve_pkg_revid(pkg: pyalpm.Package) -> str | None:
     """Extract the revision id from PKG's name. Return None if the name does not include the revision id."""
-    rev_id = pkg.version.rsplit(".")[-1].split("-")
-    if len(rev_id[0]) != 7:
+    rev_id = pkg.version.rsplit(".")[-1].split("-")[0]
+    # this is our best effort to see if what we retrieved is actually the commit hash
+    if len(rev_id) < 7 or not rev_id.isalnum():
         return None
     else:
-        return rev_id[0]
+        return rev_id
 
 
 async def get_git_source_url(pkg: str) -> str | None:
@@ -301,7 +370,7 @@ async def get_git_source_url(pkg: str) -> str | None:
         print(f"Error retrieving PKGBUILD for {pkg}:\n{stderr.decode()}")
         return None
 
-    tmpfile = NamedTemporaryFile(mode="w", delete=False)
+    tmpfile = tempfile.NamedTemporaryFile(mode="w", delete=False)
     with tmpfile as f:
         f.writelines(stdout.decode())
 
@@ -335,7 +404,9 @@ async def get_git_source_url(pkg: str) -> str | None:
 
 
 async def check_for_new_git_commit(pkg: str, rev_id: str = "") -> bool:
-    """Check if there's a newer commit than rev_id. False can mean either that the package is up-to-date or that there has been an error with the checking process."""
+    """Check if there's a newer commit than rev_id. False can mean either that
+    the package is up-to-date or that there has been an error with the checking
+    process. Details for these errors are printed to the terminal."""
     git_url = await get_git_source_url(pkg)
     # False if we did not get a git URL
     if not git_url:
@@ -365,19 +436,48 @@ async def check_for_new_git_commit(pkg: str, rev_id: str = "") -> bool:
         return False
 
 
-def check_for_git_pkg_update(conf: Config, pkg: pyalpm.Package) -> bool:
-    """Return True/False depending on whether PKG should be updated."""
+async def check_for_git_pkg_update(
+    conf: Config, pkg: pyalpm.Package
+) -> tuple[str, bool, str]:
+    """Returns a tuple with the name of PKG a boolean indicating whether the git package should be updated and if the latter is False, a string that explains why it may or may not be updated."""
     # check first if the most recent update is older than git_interval in the config allows
-    interval_secs = conf.git_interval * 60 * 60 * 24
+    fancy_echo(f"Looking for updates for {pkg.name}...")
     rev_id = retrieve_pkg_revid(pkg)
-    if pkg.installdate + interval_secs < time_ns():
-        return False
+    if pkg.installdate + conf.git_interval_secs > time():
+        return (
+            pkg.name,
+            False,
+            f"{pkg.name} was installed less than {conf.git_interval} days ago.",
+        )
     # if we were unable to determine the revision id, schedule an update (bit opinionated)
     elif not rev_id:
-        return True
+        print(
+            f"Unable to determine latest commit of {pkg.name}. Scheduling an update anyway."
+        )
+        return (pkg.name, True, f"Unable to determine latest commit of {pkg.name}")
     # finally check if the installed revision is the most recent one
-    else:
-        check_for_new_git_commit(pkg.name, rev_id=rev_id)
+    new_commit = await check_for_new_git_commit(pkg.name, rev_id=rev_id)
+    reason = (
+        "Newer commit available." if new_commit else "Most recent commit installed."
+    )
+    return (pkg.name, new_commit, reason)
+
+
+async def collect_outdated_git_packages(
+    conf: Config, pkgs: list[pyalpm.Package]
+) -> list[str]:
+    """Asynchronously check for updates for VCS (git) packages. Returns a list
+    with the names of all packages that should be rebuilt (i.e. updated.)"""
+    # collect all installed git packages
+    results = await asyncio.gather(*[check_for_git_pkg_update(conf, p) for p in pkgs])
+    # report the results
+    for pkg, upd, reason in results:
+        prfx_col = TERMCOLORS["green"] if upd else TERMCOLORS["red"]
+        fancy_echo(
+            f"{pkg}{" " if upd else " not "}scheduled for update {TERMCOLORS["default"]} ({reason}).",
+            prefix_color=prfx_col,
+        )
+    return [x[0] for x in results if x[1] is True]
 
 
 def gather_update_info(conf: Config, updates: UpdateInfo):
@@ -389,6 +489,7 @@ def gather_update_info(conf: Config, updates: UpdateInfo):
 
     headline_echo("Checking for updates in the AUR...")
     updates["aur_updates"] = get_stdout_lines("auracle outdated --quiet")
+    updates["aur_updates"] += get_aur_pkgs_new_build_req(conf, updates)
     # remove AUR updates that have been moved to official repos
     updates["aur_updates"] = [
         x for x in updates["aur_updates"] if x not in updates["pm_updates"]
@@ -396,14 +497,116 @@ def gather_update_info(conf: Config, updates: UpdateInfo):
     print_package_info(updates["aur_updates"], source="AUR")
 
     headline_echo("Checking for updates for git-based packages...")
-    git_pkgs = [pkg for pkg in conf.pm_db.pkgcache if pkg.name.endswith("-git")]
+    git_pkgs = [pkg for pkg in conf.pm_local_db.pkgcache if pkg.name.endswith("-git")]
     # get rid of pkgs already updated covered in the aur_update list right away
     git_pkgs = [pkg for pkg in git_pkgs if pkg.name not in updates["aur_updates"]]
+    updates["git_updates"] = asyncio.run(collect_outdated_git_packages(conf, git_pkgs))
+
+
+def run_pacman_update(updates: UpdateInfo):
+    """Run `pacman -Syu`."""
+    headline_echo("Installing updates from the pacman repositories...")
+    if "archlinux-keyring" in updates["pm_updates"]:
+        fancy_echo("Upgrading archlinux-keyring ahead of other packages...")
+        call_shell_cmd("sudo pacman -Sy archlinux-keyring")
+    call_shell_cmd("sudo pacman -Syu")
+
+
+async def clone_aur_pkg(pkg: str) -> str | None:
+    """Clone PKG with auracle and return a string describing its location on the system."""
+    cwd = tempfile.mkdtemp(prefix=f"pacupdate-{pkg}-")
+    dl_proc = await asyncio.create_subprocess_exec(
+        "auracle",
+        "clone",
+        pkg,
+        cwd=cwd,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    stdout, stderr = await dl_proc.communicate()
+    if dl_proc.returncode != 0:
+        fancy_echo(
+            f"Unable to clone AUR repository of package {pkg}.",
+            prefix_color=TERMCOLORS["red"],
+        )
+        return None
+    else:
+        return stdout.decode().strip().split(":")[1].strip()
+
+
+async def get_aur_deps(pkg: str) -> tuple[str, list[str]] | None:
+    """Get dependencies for package PKG. Return a tuple containing the package name and a list of the lines returned by auracle. Return None if there was an error with retrieving the dependencies."""
+    proc = await asyncio.subprocess.create_subprocess_exec(
+        "auracle",
+        "buildorder",
+        pkg,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    stdout, stderr = await proc.communicate()
+    if proc.returncode != 0:
+        fancy_echo(
+            f"Retrieving dependencies for {pkg} failed:\n{stderr.decode()}",
+            prefix_color=TERMCOLORS["red"],
+        )
+        return None
+    elif len([l for l in stdout.decode().split("\n") if l.startswith("UNKNOWN")]) > 0:
+        fancy_echo(f"Package {pkg} includes a dependency with an unknown source.")
+        return None
+    else:
+        return (pkg, stdout.decode().split("\n"))
+
+
+async def collect_aur_deps(pkg_list: list[str]) -> dict[str, list[str]]:
+    task_list = []
+    for pkg in pkg_list:
+        task_list += asyncio.create_task(get_aur_deps(pkg))
+    results = await asyncio.gather(*task_list)
+
+    return {x[0]: x[1] for x in results if x is not None}
+
+
+def install_repo_deps(dep_dict: dict[str, list[str]]) -> list[str]:
+    """Extract all the dependencies located in the pacman repos from DEPS and
+    install them. Return a list of all installed packages."""
+    all_lines = []
+    repo_pkgs = []
+    for pkg_output in dep_dict.values():
+        all_lines += pkg_output
+    for pkg in (l.split(" ")[1:] for l in all_lines if l.startswith("REPOS")):
+        repo_pkgs += pkg
+
+    call_shell_cmd(f"sudo pacman -S --asdeps {' '.join(repo_pkgs)}")
+    return repo_pkgs
+
+
+def update_aur_packages(updates: UpdateInfo):
+    """Build and install updated packages for all outdated AUR packages on the system."""
+    headline_echo("Updating outdated AUR packages...")
+    fancy_echo("Collecting updated and build dependencies...")
+    dep_dict = asyncio.run(collect_aur_deps(updates["aur_updates"]))
+
+    fancy_echo("Installing build dependencies from the pacman repos...")
+    repo_deps = install_repo_deps(dep_dict)
+    call_shell_cmd(f"pacman -Sy --asdeps {' '.join(dep_dict['repo_deps'])}")
+
+    for pkg in updates["aur_updates"]:
+        build_aur_pkg(pkg, dep_dict)
+
+
+def run():
+    """Main entry point for program."""
+    check_for_programs()
+    conf = Config()
+    updates = UpdateInfo(pm_updates=[], aur_updates=[], git_updates=[])
+    check_mirrorlist(conf)
+    check_mailinglist(conf)
+    gather_update_info(conf, updates)
+    if updates["pm_updates"]:
+        run_pacman_update(updates)
+    if updates["aur_updates"]:
+        update_aur_packages(updates)
 
 
 if __name__ == "__main__":
-    check_for_programs()
-    conf = Config()
-    updates = UpdateInfo()
-    check_mirrorlist(conf)
-    check_mailinglist(conf)
+    run()
