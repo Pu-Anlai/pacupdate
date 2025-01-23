@@ -6,7 +6,7 @@ from configparser import ConfigParser
 import shlex
 import shutil
 import subprocess
-from dataclasses import dataclass, make_dataclass
+from dataclasses import dataclass
 from html.parser import HTMLParser
 import tempfile
 from time import time
@@ -16,6 +16,7 @@ from urllib.request import urlopen
 import feedparser
 import pyalpm
 from calendar import timegm
+import json
 
 TERMCOLORS = {
     "red": "\033[31m",
@@ -25,6 +26,14 @@ TERMCOLORS = {
     "bold": "\033[1m",
     "default": "\033[0m",
 }
+
+
+def make_aur_request(pkg: str) -> dict | None:
+    r = urlopen(f"https://aur.archlinux.org/rpc/v5/info?arg[]={pkg}")
+    try:
+        return json.loads(r.read().decode())
+    except json.JSONDecodeError:
+        return None
 
 
 def getenv_int(env: str) -> int | None:
@@ -67,9 +76,6 @@ class Config:
     mirrorlist_path: str = "/etc/pacman.d/mirrorlist"
     curl_timeout: int = getenv_int("PACUPDATE_CURL_TIMEOUT") or 20
     git_interval: int = getenv_int("PACUPDATE_GIT_INTERVAL") or 14
-    _pm_local_db: pyalpm.DB | bool = False
-    _pm_sync_dbs: pyalpm.DB | bool = False
-    _pm_handle: pyalpm.Handle | bool = False
     pm_db_root: str = os.getenv("PACUPDATE_PM_ROOT") or "/"
     pm_db_path: str = os.getenv("PACUPDATE_PM_DBPATH") or "/var/lib/pacman"
 
@@ -78,21 +84,9 @@ class Config:
 
     @property
     def pm_handle(self) -> pyalpm.Handle:
-        if not self._pm_handle:
+        if not hasattr(self, "_pm_handle"):
             self.init_pm_handle()
         return self._pm_handle
-
-    @property
-    def pm_local_db(self) -> pyalpm.DB:
-        if not self._pm_local_db:
-            self.init_pm_local_db()
-        return self._pm_local_db
-
-    @property
-    def pm_sync_dbs(self) -> pyalpm.DB:
-        if not self._pm_sync_dbs:
-            self.init_pm_sync_db()
-        return self._pm_sync_dbs
 
     def init_pm_handle(self):
         try:
@@ -100,12 +94,24 @@ class Config:
         except pyalpm.error as e:
             die(str(e), exit_code=1)
 
+    @property
+    def pm_local_db(self) -> pyalpm.DB:
+        if not hasattr(self, "_pm_local_db"):
+            self.init_pm_local_db()
+        return self._pm_local_db
+
     def init_pm_local_db(self):
         """Initialize the pacman database held in the pm_db field."""
         try:
             self._pm_local_db = self.pm_handle.get_localdb()
         except pyalpm.error as e:
             die(str(e), exit_code=1)
+
+    @property
+    def pm_sync_dbs(self) -> pyalpm.DB:
+        if not hasattr(self, "_pm_sync_dbs"):
+            self.init_pm_sync_db()
+        return self._pm_sync_dbs
 
     def init_pm_sync_db(self):
         try:
@@ -123,9 +129,73 @@ class Config:
         try:
             for r in repos:
                 self.pm_handle.register_syncdb(r, 0)
-            self._pm_sync_dbs = self.pm_handle.get_syncdb()
+            self._pm_sync_dbs = self.pm_handle.get_syncdbs()
         except pyalpm.error as e:
             die(str(e), exit_code=1)
+
+    @property
+    def pm_sync_pkgcache(self) -> list[pyalpm.Package]:
+        if not hasattr(self, "_pm_sync_pkgcache"):
+            self.init_pm_sync_pkgcache()
+        return self._pm_sync_pkgcache
+
+    def init_pm_sync_pkgcache(self):
+        self._pm_sync_pkgcache = []
+        for db in self.pm_sync_dbs:
+            self._pm_sync_pkgcache.extend(db.pkgcache)
+
+
+class AURPackage:
+    """Representation of an AUR package and some helper methods attached to it."""
+
+    def __init__(self, name: str):
+        self.name = name
+        self.pm_deps = []
+        self.aur_deps_packages: list[pyalpm.Packages] = []
+        self.aur_deps = []
+        self.lost_deps = []  # deps that are neither in the repos nor in the AUR
+        self._webaur_response = None
+
+    @property
+    def webaur_response(self):
+        if self._webaur_response is None:
+            self._webaur_response = make_aur_request(self.name)
+        return self._webaur_response
+
+    def get_deps(self, conf: Config):
+        self._get_deps(self.webaur_response, conf)
+
+    def _get_deps(self, webaur_response: dict | None, conf: Config):
+        if webaur_response is None:
+            self.lost_deps
+            return
+        deps = []
+        for r in webaur_response["results"]:
+            deps.extend(self._sort_out_deps(r))
+        self._assign_deps(deps, conf)
+
+    def _sort_out_deps(self, result: dict) -> list:
+        """Get all types of depends from RESULT and return a list of all of them."""
+        l = []
+        for d in ("Depends", "MakeDepends", "CheckDepends"):
+            try:
+                l.extend(result[d])
+            except KeyError:
+                continue
+        return l
+
+    def _assign_deps(self, deps: list[str], conf: Config):
+        """Assign deps in DEPS to either {pm,aur,lost}_deps depending on where they can be found."""
+        for d in deps:
+            if d in (pkg.name for pkg in conf.pm_sync_pkgcache):
+                self.pm_deps.append(d)
+            else:
+                req = make_aur_request(d)
+                if req is None:
+                    self.lost_deps.append(d)
+                else:
+                    self.aur_deps.append(d)
+                    self._get_deps(req, conf)
 
 
 def fancy_echo(
