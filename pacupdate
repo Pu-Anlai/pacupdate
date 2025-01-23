@@ -17,6 +17,7 @@ import feedparser
 import pyalpm
 from calendar import timegm
 import json
+import aiohttp
 
 TERMCOLORS = {
     "red": "\033[31m",
@@ -28,10 +29,13 @@ TERMCOLORS = {
 }
 
 
-def make_aur_request(pkg: str) -> dict | None:
-    r = urlopen(f"https://aur.archlinux.org/rpc/v5/info?arg[]={pkg}")
+async def make_aur_request(pkg: str, session: aiohttp.ClientSession) -> dict | None:
+    async with session.get(
+        f"https://aur.archlinux.org/rpc/v5/info?arg[]={pkg}"
+    ) as resp:
+        r = await resp.text()
     try:
-        return json.loads(r.read().decode())
+        return json.loads(r)
     except json.JSONDecodeError:
         return None
 
@@ -156,23 +160,25 @@ class AURPackage:
         self.lost_deps = []  # deps that are neither in the repos nor in the AUR
         self._webaur_response = None
 
-    @property
-    def webaur_response(self):
+    async def get_webaur_response(self, session: aiohttp.ClientSession):
         if self._webaur_response is None:
-            self._webaur_response = make_aur_request(self.name)
+            self._webaur_response = await make_aur_request(self.name, session)
         return self._webaur_response
 
-    def get_deps(self, conf: Config):
-        self._get_deps(self.webaur_response, conf)
+    async def get_deps(self, conf: Config, session: aiohttp.ClientSession):
+        resp = await self.get_webaur_response(session)
+        await self._get_deps(resp, conf, session)
 
-    def _get_deps(self, webaur_response: dict | None, conf: Config):
+    async def _get_deps(
+        self, webaur_response: dict | None, conf: Config, session: aiohttp.ClientSession
+    ):
         if webaur_response is None:
             self.lost_deps
             return
         deps = []
         for r in webaur_response["results"]:
             deps.extend(self._sort_out_deps(r))
-        self._assign_deps(deps, conf)
+        await self._assign_deps(deps, conf, session)
 
     def _sort_out_deps(self, result: dict) -> list:
         """Get all types of depends from RESULT and return a list of all of them."""
@@ -184,18 +190,20 @@ class AURPackage:
                 continue
         return l
 
-    def _assign_deps(self, deps: list[str], conf: Config):
+    async def _assign_deps(
+        self, deps: list[str], conf: Config, session: aiohttp.ClientSession
+    ):
         """Assign deps in DEPS to either {pm,aur,lost}_deps depending on where they can be found."""
         for d in deps:
             if d in (pkg.name for pkg in conf.pm_sync_pkgcache):
                 self.pm_deps.append(d)
             else:
-                req = make_aur_request(d)
+                req = await make_aur_request(d, session)
                 if req is None:
                     self.lost_deps.append(d)
                 else:
                     self.aur_deps.append(d)
-                    self._get_deps(req, conf)
+                    await self._get_deps(req, conf, session)
 
 
 def fancy_echo(
@@ -582,60 +590,6 @@ def run_pacman_update(updates: UpdateInfo):
     call_shell_cmd("sudo pacman -Syu")
 
 
-async def clone_aur_pkg(pkg: str) -> str | None:
-    """Clone PKG with auracle and return a string describing its location on the system."""
-    cwd = tempfile.mkdtemp(prefix=f"pacupdate-{pkg}-")
-    dl_proc = await asyncio.create_subprocess_exec(
-        "auracle",
-        "clone",
-        pkg,
-        cwd=cwd,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    stdout, stderr = await dl_proc.communicate()
-    if dl_proc.returncode != 0:
-        fancy_echo(
-            f"Unable to clone AUR repository of package {pkg}.",
-            prefix_color=TERMCOLORS["red"],
-        )
-        return None
-    else:
-        return stdout.decode().strip().split(":")[1].strip()
-
-
-async def get_aur_deps(pkg: str) -> tuple[str, list[str]] | None:
-    """Get dependencies for package PKG. Return a tuple containing the package name and a list of the lines returned by auracle. Return None if there was an error with retrieving the dependencies."""
-    proc = await asyncio.subprocess.create_subprocess_exec(
-        "auracle",
-        "buildorder",
-        pkg,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    stdout, stderr = await proc.communicate()
-    if proc.returncode != 0:
-        fancy_echo(
-            f"Retrieving dependencies for {pkg} failed:\n{stderr.decode()}",
-            prefix_color=TERMCOLORS["red"],
-        )
-        return None
-    elif len([l for l in stdout.decode().split("\n") if l.startswith("UNKNOWN")]) > 0:
-        fancy_echo(f"Package {pkg} includes a dependency with an unknown source.")
-        return None
-    else:
-        return (pkg, stdout.decode().split("\n"))
-
-
-async def collect_aur_deps(pkg_list: list[str]) -> dict[str, list[str]]:
-    task_list = []
-    for pkg in pkg_list:
-        task_list += asyncio.create_task(get_aur_deps(pkg))
-    results = await asyncio.gather(*task_list)
-
-    return {x[0]: x[1] for x in results if x is not None}
-
-
 def install_repo_deps(dep_dict: dict[str, list[str]]) -> list[str]:
     """Extract all the dependencies located in the pacman repos from DEPS and
     install them. Return a list of all installed packages."""
@@ -650,18 +604,28 @@ def install_repo_deps(dep_dict: dict[str, list[str]]) -> list[str]:
     return repo_pkgs
 
 
-def update_aur_packages(updates: UpdateInfo):
-    """Build and install updated packages for all outdated AUR packages on the system."""
-    headline_echo("Updating outdated AUR packages...")
-    fancy_echo("Collecting updated and build dependencies...")
-    dep_dict = asyncio.run(collect_aur_deps(updates["aur_updates"]))
+async def update_aur_packages(
+    conf: Config, updates: UpdateInfo, session: aiohttp.ClientSession
+):
+    headline_echo("Installing updates from the Arch User Repository...")
+    pkgs = [AURPackage(name) for name in updates]
+    tasks = [asyncio.create_task(pkg.get_deps(conf, session)) for pkg in pkgs]
+    await asyncio.gather(*tasks)
+    # throw out any packages that have unretrievable dependencies
+    for p in [pkg for pkg in pkgs if len(pkg.lost_deps) > 0]:
+        fancy_echo(
+            f"Package {p.name} will be skipped because the following of its dependencies are unavailable:"
+        )
+        print("\n".join(p.lost_deps))
+        if not y_or_n("Do you want to continue?"):
+            exit()
 
-    fancy_echo("Installing build dependencies from the pacman repos...")
-    repo_deps = install_repo_deps(dep_dict)
-    call_shell_cmd(f"pacman -Sy --asdeps {' '.join(dep_dict['repo_deps'])}")
-
-    for pkg in updates["aur_updates"]:
-        build_aur_pkg(pkg, dep_dict)
+    # first we'll install all the dependencies that are available from the repos
+    pm_deps = set()
+    for p in pkgs:
+        pm_deps.update(p.pm_deps)
+    fancy_echo("Installing necessary (build) dependencies from the pacman repos...")
+    call_shell_cmd(f"sudo pacman -S {" ".join(pm_deps)}")
 
 
 def run():
