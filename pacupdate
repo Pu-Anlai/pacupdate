@@ -35,9 +35,16 @@ async def make_aur_request(pkg: str, session: aiohttp.ClientSession) -> dict | N
     ) as resp:
         r = await resp.text()
     try:
-        return json.loads(r)
+        resp = json.loads(r)
     except json.JSONDecodeError:
         return None
+
+    if int(resp["resultcount"]) > 1:
+        raise TypeError(
+            f"Queried the AUR for signle package {pkg} but got multiple results. This should never happen."
+        )
+    else:
+        return resp["results"][0]
 
 
 def getenv_int(env: str) -> int | None:
@@ -152,16 +159,25 @@ class Config:
 class AURPackage:
     """Representation of an AUR package and some helper methods attached to it."""
 
-    def __init__(self, name: str):
+    def __init__(self, name: str, conf: Config):
         self.name = name
         self.pm_deps = []
         self.aur_deps_packages: list[pyalpm.Packages] = []
         self.aur_deps = []
         self.lost_deps = []  # deps that are neither in the repos nor in the AUR
-        self._webaur_response = None
+        self.local_version = conf.pm_local_db.get_pkg(self.name).version
 
-    async def get_webaur_response(self, session: aiohttp.ClientSession):
-        if self._webaur_response is None:
+    async def get_outdated(self, session: aiohttp.ClientSession) -> bool | None:
+        if not hasattr(self, "_is_outdated"):
+            resp = await self.get_webaur_response(session)
+            if resp is None:
+                return None
+            else:
+                self._is_outdated = self.local_version == resp["Version"]
+        return self._is_outdated
+
+    async def get_webaur_response(self, session: aiohttp.ClientSession) -> dict | None:
+        if not hasattr(self, "_webaur_response"):
             self._webaur_response = await make_aur_request(self.name, session)
         return self._webaur_response
 
@@ -175,10 +191,8 @@ class AURPackage:
         if webaur_response is None:
             self.lost_deps
             return
-        deps = []
-        for r in webaur_response["results"]:
-            deps.extend(self._sort_out_deps(r))
-        await self._assign_deps(deps, conf, session)
+        all_deps = self._sort_out_deps(webaur_response)
+        await self._assign_deps(all_deps, conf, session)
 
     def _sort_out_deps(self, result: dict) -> list:
         """Get all types of depends from RESULT and return a list of all of them."""
