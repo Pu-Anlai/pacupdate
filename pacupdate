@@ -18,6 +18,7 @@ import pyalpm
 from calendar import timegm
 import json
 import aiohttp
+import tarfile
 
 TERMCOLORS = {
     "red": "\033[31m",
@@ -165,7 +166,7 @@ class AURPackage:
         self.aur_deps_packages: list[pyalpm.Packages] = []
         self.aur_deps = []
         self.lost_deps = []  # deps that are neither in the repos nor in the AUR
-        self.local_version = conf.pm_local_db.get_pkg(self.name).version
+        self.local_version = self.get_local_version(conf)
 
     async def get_outdated(self, session: aiohttp.ClientSession) -> bool | None:
         if not hasattr(self, "_is_outdated"):
@@ -181,6 +182,13 @@ class AURPackage:
             self._webaur_response = await make_aur_request(self.name, session)
         return self._webaur_response
 
+    def get_local_version(self, conf: Config) -> str | None:
+        pkg = conf.pm_local_db.get_pkg(self.name)
+        if pkg is None:
+            return None
+        else:
+            return pkg.version
+
     @property
     def is_built(self) -> bool:
         """Indicate whether a package has been built or not."""
@@ -193,17 +201,45 @@ class AURPackage:
             return
 
         url = f"https://aur.archlinux.org/{webaur_response["URLPath"]}"
-        filepath = os.path.basename(webaur_response["URLPath"])
-        async with session.get(
-            f"https://aur.archlinux.org/{webaur_response["URLPath"]}"
-        ) as resp:
+        filepath = os.path.join(
+            self._build_dir, os.path.basename(webaur_response["URLPath"])
+        )
+        async with session.get(url) as resp:
             await self.retrieve_package(resp, filepath)
+        await self.makepkg_this()
+
+    async def makepkg_this(self):
+        proc = await asyncio.create_subprocess_exec(
+            "makepkg",
+            cwd=os.path.join(self._build_dir, self.name),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        _, stderr = await proc.communicate()
+        if proc.returncode != 0:
+            self._build_error = stderr.decode()
+            return
+
+        proc = await asyncio.create_subprocess_exec(
+            "makepkg",
+            "--packagelist",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await proc.communicate()
+        if proc.returncode != 0:
+            self._build_error = stderr.decode()
+            return
+
+        self.pkg_location = stdout.decode().split("\n")
 
     async def retrieve_package(self, response: aiohttp.ClientResponse, path: str):
         """Download and extract package from URL_PATH. URLPath is specified in the Webaur response object."""
-        with open(os.path.join(path), "wb") as f:
+        with open(path, "wb") as f:
             async for chunk in response.content.iter_chunked(512 * 1024):
                 f.write(chunk)
+        with tarfile.open(path, "r") as f:
+            f.extractall(path=self._build_dir, filter="tar")
 
     async def get_deps(self, conf: Config, session: aiohttp.ClientSession):
         resp = await self.get_webaur_response(session)
@@ -680,5 +716,5 @@ def run():
         update_aur_packages(updates)
 
 
-if __name__ == "__main__":
-    run()
+# if __name__ == "__main__":
+#     run()
