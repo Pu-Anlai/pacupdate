@@ -41,7 +41,7 @@ async def make_aur_request(pkg: str, session: aiohttp.ClientSession) -> dict | N
 
     if int(resp["resultcount"]) > 1:
         raise TypeError(
-            f"Queried the AUR for signle package {pkg} but got multiple results. This should never happen."
+            f"Queried the AUR for single package {pkg} but got multiple results. This should never happen."
         )
     else:
         return resp["results"][0]
