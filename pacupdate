@@ -181,6 +181,30 @@ class AURPackage:
             self._webaur_response = await make_aur_request(self.name, session)
         return self._webaur_response
 
+    @property
+    def is_built(self) -> bool:
+        """Indicate whether a package has been built or not."""
+        return hasattr(self, "pkg_location")
+
+    async def build(self, session: aiohttp.ClientSession):
+        self._build_dir = tempfile.mkdtemp()
+        webaur_response = await self.get_webaur_response(session)
+        if webaur_response is None:
+            return
+
+        url = f"https://aur.archlinux.org/{webaur_response["URLPath"]}"
+        filepath = os.path.basename(webaur_response["URLPath"])
+        async with session.get(
+            f"https://aur.archlinux.org/{webaur_response["URLPath"]}"
+        ) as resp:
+            await self.retrieve_package(resp, filepath)
+
+    async def retrieve_package(self, response: aiohttp.ClientResponse, path: str):
+        """Download and extract package from URL_PATH. URLPath is specified in the Webaur response object."""
+        with open(os.path.join(path), "wb") as f:
+            async for chunk in response.content.iter_chunked(512 * 1024):
+                f.write(chunk)
+
     async def get_deps(self, conf: Config, session: aiohttp.ClientSession):
         resp = await self.get_webaur_response(session)
         await self._get_deps(resp, conf, session)
@@ -622,7 +646,7 @@ async def update_aur_packages(
     conf: Config, updates: UpdateInfo, session: aiohttp.ClientSession
 ):
     headline_echo("Installing updates from the Arch User Repository...")
-    pkgs = [AURPackage(name) for name in updates]
+    pkgs = [AURPackage(name, conf) for name in updates]
     tasks = [asyncio.create_task(pkg.get_deps(conf, session)) for pkg in pkgs]
     await asyncio.gather(*tasks)
     # throw out any packages that have unretrievable dependencies
@@ -639,7 +663,7 @@ async def update_aur_packages(
     for p in pkgs:
         pm_deps.update(p.pm_deps)
     fancy_echo("Installing necessary (build) dependencies from the pacman repos...")
-    call_shell_cmd(f"sudo pacman -S {" ".join(pm_deps)}")
+    call_shell_cmd(f"sudo pacman -S --needed {" ".join(pm_deps)}")
 
 
 def run():
