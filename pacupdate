@@ -321,9 +321,22 @@ class GitPackage(AURPackage):
     def __init__(self, name: str, conf: Config):
         super().__init__(name, conf)
         self.update_reason = ""
+        self.local_pkg = conf.pm_local_db.get_pkg(self.name)
+        self.local_revision_id = self._get_local_revision_id()
 
-    async def get_revision_id(self, session: aiohttp.ClientSession) -> str | None:
-        if not hasattr(self, "_revision_id"):
+    def _get_local_revision_id(self) -> str | None:
+        version = self.local_pkg.version
+        rev_id = version.rsplit(".")[-1].split("-")[0]
+        # this is the best we can do to check if what we got is actually a commit hash
+        if len(rev_id) < 7 or not rev_id.isalnum():
+            return None
+        else:
+            return rev_id
+
+    async def get_upstream_revision_id(
+        self, session: aiohttp.ClientSession
+    ) -> str | None:
+        if not hasattr(self, "_us_rev_id"):
             await self.retrieve_package(session)
             if not self.retrieved:
                 return None
@@ -335,8 +348,8 @@ class GitPackage(AURPackage):
             if git_log is None:
                 return None
             else:
-                self._revision_id = git_log.split("\n")[0][:7]
-        return self._revision_id
+                self._us_rev_id = git_log.split("\n")[0][:7]
+        return self._us_rev_id
 
     async def _git_ls_remote(self, url: str) -> str | None:
         proc = await asyncio.create_subprocess_exec(
@@ -367,6 +380,24 @@ class GitPackage(AURPackage):
             return None
         else:
             return git_url[0][4:]
+
+    async def get_outdated_git(
+        self, conf: Config, session: aiohttp.ClientSession
+    ) -> bool | None:
+        if not hasattr(self, "_is_outdated"):
+            # first check if enough time has passed to warrant checking for an update
+            if self.local_pkg.installdate + conf.git_interval_secs > time():
+                self._is_outdated = False
+            # if we didn't retrieve an upstream revision id, let's just schedule an update anyway
+            elif await self.get_upstream_revision_id(session) is None:
+                self._is_outdated = True
+                self.update_reason = f"Unable to determine latest commit of {self.name}. Scheduling an update anyway."
+            else:
+                self._is_outdated = (
+                    await self.get_upstream_revision_id(session)
+                    != self.local_revision_id
+                )
+        return self._is_outdated
 
 
 class UpdateInfo(TypedDict):
