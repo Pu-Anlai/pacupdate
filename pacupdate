@@ -161,6 +161,8 @@ class AURPackage:
         self.aur_deps = []
         self.lost_deps = []  # deps that are neither in the repos nor in the AUR
         self.local_version: str | None = self.get_local_version(conf)
+        self.retrieved = False
+        self.built = False
 
     async def get_outdated(self, session: aiohttp.ClientSession) -> bool | None:
         if not hasattr(self, "_is_outdated"):
@@ -216,8 +218,9 @@ class AURPackage:
         filepath = os.path.join(
             self._build_dir, os.path.basename(aurweb_response["URLPath"])
         )
-        async with session.get(url) as resp:
-            await self.retrieve_package(resp, filepath)
+        if not self.retrieved:
+            async with session.get(url) as resp:
+                await self.retrieve_package(resp, filepath)
         await self.makepkg_this()
 
     async def makepkg_this(self):
@@ -244,6 +247,7 @@ class AURPackage:
             return
 
         self.pkg_location = stdout.decode().split("\n")
+        self.built = True
 
     async def retrieve_package(self, response: aiohttp.ClientResponse, path: str):
         """Download and extract package from URL_PATH. URLPath is specified in the Aurweb response object."""
@@ -252,6 +256,7 @@ class AURPackage:
                 f.write(chunk)
         with tarfile.open(path, "r") as f:
             f.extractall(path=self._build_dir, filter="tar")
+        self.retrieved = True
 
     async def get_deps(self, conf: Config, session: aiohttp.ClientSession):
         resp = await self.get_aurweb_response(session)
@@ -689,7 +694,7 @@ def gather_update_info(
 
     headline_echo("Checking for updates for git-based packages...")
     git_pkgs = [pkg for pkg in conf.pm_local_db.pkgcache if pkg.name.endswith("-git")]
-    # get rid of pkgs already updated covered in the aur_update list right away
+    # get rid of pkgs already covered in the aur_update list right away
     git_pkgs = [pkg for pkg in git_pkgs if pkg.name not in updates["aur_updates"]]
     updates["git_updates"] = asyncio.run(collect_outdated_git_packages(conf, git_pkgs))
 
