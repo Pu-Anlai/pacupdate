@@ -56,12 +56,6 @@ def getenv_int(env: str) -> int | None:
         return None
 
 
-class UpdateInfo(TypedDict):
-    pm_updates: list[str]
-    aur_updates: list[str]
-    git_updates: list[str]
-
-
 class FeedPrinter(HTMLParser):
     """Cleans up HTML tags and does nothing else."""
 
@@ -166,7 +160,7 @@ class AURPackage:
         self.aur_deps_packages: list[pyalpm.Packages] = []
         self.aur_deps = []
         self.lost_deps = []  # deps that are neither in the repos nor in the AUR
-        self.local_version = self.get_local_version(conf)
+        self.local_version: str | None = self.get_local_version(conf)
 
     async def get_outdated(self, session: aiohttp.ClientSession) -> bool | None:
         if not hasattr(self, "_is_outdated"):
@@ -176,6 +170,24 @@ class AURPackage:
             else:
                 self._is_outdated = self.local_version == resp["Version"]
         return self._is_outdated
+
+    async def get_rebuild_required(
+        self, conf: Config, session: aiohttp.ClientSession
+    ) -> bool | None:
+        """This checks whether any of the package's dependencies have been
+        updated in the repos or the AUR. This would lead to it requiring to be
+        rebuilt as well."""
+        if not hasattr(self, "_rebuild_required"):
+            resp = await self.get_webaur_response(session)
+            if resp is None:
+                return None
+            for dep in resp["Depends"]:
+                if dep in conf.pm_sync_pkgcache:
+                    self._rebuild_required = True
+            else:
+                self._rebuild_required = False
+
+        return self._rebuild_required
 
     async def get_webaur_response(self, session: aiohttp.ClientSession) -> dict | None:
         if not hasattr(self, "_webaur_response"):
@@ -285,6 +297,12 @@ class GitPackage(AURPackage):
 
     def __init__(self, name: str, conf: Config):
         super().__init__(name, conf)
+
+
+class UpdateInfo(TypedDict):
+    pm_updates: list[str]
+    aur_updates: list[AURPackage]
+    git_updates: list[GitPackage]
 
 
 def fancy_echo(
@@ -490,8 +508,6 @@ def get_foreign_packages(conf: Config) -> Iterator[pyalpm.Package]:
 def get_aur_pkgs_new_build_req(conf: Config, updates: UpdateInfo) -> list[str]:
     """Return a list of all AUR packages that require re-compilation because of
     updates in the official repos."""
-    if "pm_updates" not in updates.keys():
-        return []
     deps = {}
     for p in get_foreign_packages(conf):
         for d in (*p.depends, *p.optdepends):
@@ -639,7 +655,21 @@ async def collect_outdated_git_packages(
     return [x[0] for x in results if x[1] is True]
 
 
-def gather_update_info(conf: Config, updates: UpdateInfo):
+async def collect_aur_updates(
+    conf: Config, session: aiohttp.ClientSession
+) -> list[AURPackage]:
+    aur_pkgs = [AURPackage(pkg, conf) for pkg in get_foreign_packages(conf)]
+    async with asyncio.TaskGroup() as tg:
+        for pkg in aur_pkgs:
+            tg.create_task(pkg.get_outdated(session))
+            tg.create_task(pkg.get_rebuild_required(conf, session))
+
+    return [pkg for pkg in aur_pkgs if (pkg._is_outdated or pkg._rebuild_required)]
+
+
+def gather_update_info(
+    conf: Config, updates: UpdateInfo, session: aiohttp.ClientSession
+):
     """Checks for updates from available sources."""
     headline_echo("Checking for updates in the pacman repos...")
     call_shell_cmd("sudo pacman -Sy", stdout=subprocess.DEVNULL)
@@ -647,7 +677,9 @@ def gather_update_info(conf: Config, updates: UpdateInfo):
     print_package_info(updates["pm_updates"])
 
     headline_echo("Checking for updates in the AUR...")
-    updates["aur_updates"] = get_stdout_lines("auracle outdated --quiet")
+    updates["aur_updates"] = [
+        AURPackage(pkg, conf) for pkg in get_foreign_packages(conf)
+    ]
     updates["aur_updates"] += get_aur_pkgs_new_build_req(conf, updates)
     # remove AUR updates that have been moved to official repos
     updates["aur_updates"] = [
