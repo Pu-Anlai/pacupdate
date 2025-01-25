@@ -164,7 +164,7 @@ class AURPackage:
 
     async def get_outdated(self, session: aiohttp.ClientSession) -> bool | None:
         if not hasattr(self, "_is_outdated"):
-            resp = await self.get_webaur_response(session)
+            resp = await self.get_aurweb_response(session)
             if resp is None:
                 return None
             else:
@@ -178,7 +178,7 @@ class AURPackage:
         updated in the repos or the AUR. This would lead to it requiring to be
         rebuilt as well."""
         if not hasattr(self, "_rebuild_required"):
-            resp = await self.get_webaur_response(session)
+            resp = await self.get_aurweb_response(session)
             if resp is None:
                 return None
             for dep in resp["Depends"]:
@@ -189,10 +189,10 @@ class AURPackage:
 
         return self._rebuild_required
 
-    async def get_webaur_response(self, session: aiohttp.ClientSession) -> dict | None:
-        if not hasattr(self, "_webaur_response"):
-            self._webaur_response = await make_aur_request(self.name, session)
-        return self._webaur_response
+    async def get_aurweb_response(self, session: aiohttp.ClientSession) -> dict | None:
+        if not hasattr(self, "_aurweb_response"):
+            self._aurweb_response = await make_aur_request(self.name, session)
+        return self._aurweb_response
 
     def get_local_version(self, conf: Config) -> str | None:
         pkg = conf.pm_local_db.get_pkg(self.name)
@@ -208,13 +208,13 @@ class AURPackage:
 
     async def build(self, session: aiohttp.ClientSession):
         self._build_dir = tempfile.mkdtemp()
-        webaur_response = await self.get_webaur_response(session)
-        if webaur_response is None:
+        aurweb_response = await self.get_aurweb_response(session)
+        if aurweb_response is None:
             return
 
-        url = f"https://aur.archlinux.org/{webaur_response["URLPath"]}"
+        url = f"https://aur.archlinux.org/{aurweb_response["URLPath"]}"
         filepath = os.path.join(
-            self._build_dir, os.path.basename(webaur_response["URLPath"])
+            self._build_dir, os.path.basename(aurweb_response["URLPath"])
         )
         async with session.get(url) as resp:
             await self.retrieve_package(resp, filepath)
@@ -246,7 +246,7 @@ class AURPackage:
         self.pkg_location = stdout.decode().split("\n")
 
     async def retrieve_package(self, response: aiohttp.ClientResponse, path: str):
-        """Download and extract package from URL_PATH. URLPath is specified in the Webaur response object."""
+        """Download and extract package from URL_PATH. URLPath is specified in the Aurweb response object."""
         with open(path, "wb") as f:
             async for chunk in response.content.iter_chunked(512 * 1024):
                 f.write(chunk)
@@ -254,16 +254,16 @@ class AURPackage:
             f.extractall(path=self._build_dir, filter="tar")
 
     async def get_deps(self, conf: Config, session: aiohttp.ClientSession):
-        resp = await self.get_webaur_response(session)
+        resp = await self.get_aurweb_response(session)
         await self._get_deps(resp, conf, session)
 
     async def _get_deps(
-        self, webaur_response: dict | None, conf: Config, session: aiohttp.ClientSession
+        self, aurweb_response: dict | None, conf: Config, session: aiohttp.ClientSession
     ):
-        if webaur_response is None:
+        if aurweb_response is None:
             self.lost_deps
             return
-        all_deps = self._sort_out_deps(webaur_response)
+        all_deps = self._sort_out_deps(aurweb_response)
         await self._assign_deps(all_deps, conf, session)
 
     def _sort_out_deps(self, result: dict) -> list:
