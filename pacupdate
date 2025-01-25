@@ -28,6 +28,7 @@ TERMCOLORS = {
     "bold": "\033[1m",
     "default": "\033[0m",
 }
+BUILDDIR = tempfile.mkdtemp()
 
 
 async def make_aur_request(pkg: str, session: aiohttp.ClientSession) -> dict | None:
@@ -163,6 +164,10 @@ class AURPackage:
         self.local_version: str | None = self.get_local_version(conf)
         self.retrieved = False
         self.built = False
+        self.aur_url: str | None = None
+        self.archive_path: str | None = None
+        self.build_dir = os.path.join(BUILDDIR, self.name)
+        os.makedirs(self.build_dir)
 
     async def get_outdated(self, session: aiohttp.ClientSession) -> bool | None:
         if not hasattr(self, "_is_outdated"):
@@ -208,25 +213,34 @@ class AURPackage:
         """Indicate whether a package has been built or not."""
         return hasattr(self, "pkg_location")
 
+    async def ensure_paths(self, session: aiohttp.ClientSession):
+        if not self.archive_path is None:
+            return
+        resp = await self.get_aurweb_response(session)
+        if resp is None:
+            return
+        self.url = f"https://aur.archlinux.org/{resp["URLPath"]}"
+        self.archive_path = os.path.join(
+            self.build_dir, os.path.basename(resp["URLPath"])
+        )
+
     async def build(self, session: aiohttp.ClientSession):
-        self._build_dir = tempfile.mkdtemp()
         aurweb_response = await self.get_aurweb_response(session)
         if aurweb_response is None:
             return
+        await self.ensure_paths(session)
 
-        url = f"https://aur.archlinux.org/{aurweb_response["URLPath"]}"
-        filepath = os.path.join(
-            self._build_dir, os.path.basename(aurweb_response["URLPath"])
-        )
+        if self.url is None or self.archive_path is None:
+            return
+
         if not self.retrieved:
-            async with session.get(url) as resp:
-                await self.retrieve_package(resp, filepath)
+            await self.retrieve_package(session)
         await self.makepkg_this()
 
     async def makepkg_this(self):
         proc = await asyncio.create_subprocess_exec(
             "makepkg",
-            cwd=os.path.join(self._build_dir, self.name),
+            cwd=os.path.join(self.build_dir, self.name),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
@@ -249,13 +263,17 @@ class AURPackage:
         self.pkg_location = stdout.decode().split("\n")
         self.built = True
 
-    async def retrieve_package(self, response: aiohttp.ClientResponse, path: str):
+    async def retrieve_package(self, session: aiohttp.ClientSession):
         """Download and extract package from URL_PATH. URLPath is specified in the Aurweb response object."""
-        with open(path, "wb") as f:
-            async for chunk in response.content.iter_chunked(512 * 1024):
-                f.write(chunk)
-        with tarfile.open(path, "r") as f:
-            f.extractall(path=self._build_dir, filter="tar")
+        await self.ensure_paths(session)
+        if self.url is None or self.archive_path is None:
+            return
+        async with session.get(self.url) as response:
+            with open(self.archive_path, "wb") as f:
+                async for chunk in response.content.iter_chunked(512 * 1024):
+                    f.write(chunk)
+            with tarfile.open(self.archive_path, "r") as f:
+                f.extractall(path=self.build_dir, filter="tar")
         self.retrieved = True
 
     async def get_deps(self, conf: Config, session: aiohttp.ClientSession):
@@ -302,6 +320,53 @@ class GitPackage(AURPackage):
 
     def __init__(self, name: str, conf: Config):
         super().__init__(name, conf)
+        self.update_reason = ""
+
+    async def get_revision_id(self, session: aiohttp.ClientSession) -> str | None:
+        if not hasattr(self, "_revision_id"):
+            await self.retrieve_package(session)
+            if not self.retrieved:
+                return None
+            pkgbuild = os.path.join(self.build_dir, self.name, "PKGBUILD")
+            git_url = await self._get_source_from_pkgbuild(pkgbuild)
+            if git_url is None:
+                return None
+            git_log = await self._git_ls_remote(git_url)
+            if git_log is None:
+                return None
+            else:
+                self._revision_id = git_log.split("\n")[0][:7]
+        return self._revision_id
+
+    async def _git_ls_remote(self, url: str) -> str | None:
+        proc = await asyncio.create_subprocess_exec(
+            "git",
+            "ls-remote",
+            url,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, _ = await proc.communicate()
+        if proc.returncode != 0:
+            return None
+        return stdout.decode()
+
+    async def _get_source_from_pkgbuild(self, pkgbuild) -> str | None:
+        proc = await asyncio.create_subprocess_exec(
+            "sh",
+            "-c",
+            f'source {pkgbuild} && set -- $source && echo "$@"',
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, _ = await proc.communicate()
+        if proc.returncode != 0:
+            return None
+        git_url = [x for x in stdout.decode().split("\n") if x.startswith("git+")]
+        if len(git_url) != 1:
+            return None
+        else:
+            return git_url[0][4:]
 
 
 class UpdateInfo(TypedDict):
