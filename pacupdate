@@ -280,6 +280,13 @@ class AURPackage:
                     await self._get_deps(req, conf, session)
 
 
+class GitPackage(AURPackage):
+    """Subclass of AURPackage with adapted for git packages."""
+
+    def __init__(self, name: str, conf: Config):
+        super().__init__(name, conf)
+
+
 def fancy_echo(
     msg: str,
     prefix: str = "::",
