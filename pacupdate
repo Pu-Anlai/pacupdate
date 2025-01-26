@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from html.parser import HTMLParser
 import tempfile
 from time import time
-from typing import Iterator, NoReturn, TypedDict
+from typing import Iterator, NoReturn, TypedDict, Literal
 from urllib.error import URLError
 from urllib.request import urlopen
 import feedparser
@@ -55,6 +55,14 @@ def getenv_int(env: str) -> int | None:
         return int(os.getenv(env, ""))
     except ValueError:
         return None
+
+
+class UpdateInfo(TypedDict):
+    pm_updates: list[str]
+    # TypedDicts are evaluated eagerly. So we need to use string literals here
+    # to not create a circular dependency for the type checker.
+    aur_updates: list["AURPackage"]
+    git_updates: list["GitPackage"]
 
 
 class FeedPrinter(HTMLParser):
@@ -152,22 +160,60 @@ class Config:
             self._pm_sync_pkgcache.extend(db.pkgcache)
 
 
+class AURDeps(TypedDict):
+    depends: list[str]
+    make_depends: list[str]
+    check_depends: list[str]
+
+
 class AURPackage:
     """Representation of an AUR package and some helper methods attached to it."""
 
     def __init__(self, name: str, conf: Config):
         self.name = name
-        self.pm_deps = []
-        self.aur_deps_packages: list[pyalpm.Packages] = []
-        self.aur_deps = []
-        self.lost_deps = []  # deps that are neither in the repos nor in the AUR
         self.local_version: str | None = self.get_local_version(conf)
         self.retrieved = False
         self.built = False
+        self.has_deps = False
         self.aur_url: str | None = None
         self.archive_path: str | None = None
         self.build_dir = os.path.join(BUILDDIR, self.name)
         os.makedirs(self.build_dir)
+
+    @property
+    def pm_deps(self) -> AURDeps:
+        if not hasattr(self, "_pm_deps"):
+            self._pm_deps = AURDeps(depends=[], make_depends=[], check_depends=[])
+        return self._pm_deps
+
+    @pm_deps.setter
+    def pm_deps(self, value: AURDeps):
+        self._pm_deps = value
+
+    @property
+    def aur_deps(self) -> AURDeps:
+        if not hasattr(self, "_aur_deps"):
+            self._aur_deps = AURDeps(depends=[], make_depends=[], check_depends=[])
+        return self._aur_deps
+
+    @aur_deps.setter
+    def aur_deps(self, value: AURDeps):
+        self._aur_deps = value
+
+    @property
+    def lost_deps(self) -> AURDeps:
+        if not hasattr(self, "_lost_deps"):
+            self._lost_deps = AURDeps(depends=[], make_depends=[], check_depends=[])
+        return self._lost_deps
+
+    @lost_deps.setter
+    def lost_deps(self, value: AURDeps):
+        self._lost_deps = value
+
+    @property
+    def is_built(self) -> bool:
+        """Indicate whether a package has been built or not."""
+        return hasattr(self, "pkg_location")
 
     async def get_outdated(self, session: aiohttp.ClientSession) -> bool | None:
         if not hasattr(self, "_is_outdated"):
@@ -179,7 +225,7 @@ class AURPackage:
         return self._is_outdated
 
     async def get_rebuild_required(
-        self, conf: Config, session: aiohttp.ClientSession
+        self, updates: UpdateInfo, session: aiohttp.ClientSession
     ) -> bool | None:
         """This checks whether any of the package's dependencies have been
         updated in the repos or the AUR. This would lead to it requiring to be
@@ -189,7 +235,10 @@ class AURPackage:
             if resp is None:
                 return None
             for dep in resp["Depends"]:
-                if dep in conf.pm_sync_pkgcache:
+                if dep in (
+                    *updates["pm_updates"],
+                    *(pkg.name for pkg in updates["aur_updates"]),
+                ):
                     self._rebuild_required = True
             else:
                 self._rebuild_required = False
@@ -207,11 +256,6 @@ class AURPackage:
             return None
         else:
             return pkg.version
-
-    @property
-    def is_built(self) -> bool:
-        """Indicate whether a package has been built or not."""
-        return hasattr(self, "pkg_location")
 
     async def ensure_paths(self, session: aiohttp.ClientSession):
         if not self.archive_path is None:
@@ -277,42 +321,49 @@ class AURPackage:
         self.retrieved = True
 
     async def get_deps(self, conf: Config, session: aiohttp.ClientSession):
-        resp = await self.get_aurweb_response(session)
-        await self._get_deps(resp, conf, session)
+        if not self.has_deps:
+            resp = await self.get_aurweb_response(session)
+            await self._get_deps(resp, conf, session)
+            self.has_deps = True
 
     async def _get_deps(
         self, aurweb_response: dict | None, conf: Config, session: aiohttp.ClientSession
     ):
         if aurweb_response is None:
-            self.lost_deps
             return
-        all_deps = self._sort_out_deps(aurweb_response)
-        await self._assign_deps(all_deps, conf, session)
-
-    def _sort_out_deps(self, result: dict) -> list:
-        """Get all types of depends from RESULT and return a list of all of them."""
-        l = []
-        for d in ("Depends", "MakeDepends", "CheckDepends"):
-            try:
-                l.extend(result[d])
-            except KeyError:
-                continue
-        return l
+        await self._assign_deps(aurweb_response, conf, session)
 
     async def _assign_deps(
-        self, deps: list[str], conf: Config, session: aiohttp.ClientSession
+        self, resp: dict, conf: Config, session: aiohttp.ClientSession
     ):
-        """Assign deps in DEPS to either {pm,aur,lost}_deps depending on where they can be found."""
-        for d in deps:
-            if d in (pkg.name for pkg in conf.pm_sync_pkgcache):
-                self.pm_deps.append(d)
-            else:
-                req = await make_aur_request(d, session)
-                if req is None:
-                    self.lost_deps.append(d)
-                else:
-                    self.aur_deps.append(d)
-                    await self._get_deps(req, conf, session)
+        """Assign deps in DEPS to either {pm,aur,lost}_deps depending on where they can be found.
+        For AUR deps, add their own dependencies as well."""
+        trans = {
+            "Depends": "depends",
+            "MakeDepends": "make_depends",
+            "CheckDepends": "check_depends",
+        }
+        for k, v in trans.items():
+            try:
+                for d in resp[k]:
+                    getattr(self, await self._get_dep_source(d, conf, session))[v] = d
+            except KeyError:
+                continue
+
+    async def _get_dep_source(
+        self, dep: str, conf: Config, session: aiohttp.ClientSession
+    ) -> Literal["pm_deps", "aur_deps", "lost_deps"]:
+        # first check if dep is in the official repos
+        if dep in [pkg.name for pkg in conf.pm_sync_pkgcache]:
+            return "pm_deps"
+        # next check if dep is available from the AUR
+        req = await make_aur_request(dep, session)
+        # if not: no idea where it may bes
+        if req is None:
+            return "lost_deps"
+        else:
+            await self._get_deps(req, conf, session)
+            return "aur_deps"
 
 
 class GitPackage(AURPackage):
@@ -383,7 +434,8 @@ class GitPackage(AURPackage):
 
     async def get_outdated_git(
         self, conf: Config, session: aiohttp.ClientSession
-    ) -> bool | None:
+    ) -> bool:
+        """Return True if the package passes requirements for an update"""
         if not hasattr(self, "_is_outdated"):
             # first check if enough time has passed to warrant checking for an update
             if self.local_pkg.installdate + conf.git_interval_secs > time():
@@ -398,12 +450,6 @@ class GitPackage(AURPackage):
                     != self.local_revision_id
                 )
         return self._is_outdated
-
-
-class UpdateInfo(TypedDict):
-    pm_updates: list[str]
-    aur_updates: list[AURPackage]
-    git_updates: list[GitPackage]
 
 
 def fancy_echo(
@@ -440,25 +486,17 @@ def die(msg: str, exit_code: int = 0) -> NoReturn:
 
 def check_for_programs():
     """Checks whether sudo executable is present on the system."""
-    for p in ["sudo", "git", "auracle"]:
+    for p in ["sudo", "git"]:
         if not shutil.which(p):
             die(f"{p} not found in path. Exiting...", exit_code=1)
-    # also check if auracle needs to be rebuilt.
-    sp = subprocess.run(shlex.split("auracle --version"), capture_output=True)
-    if not sp.returncode == 0:
-        fancy_echo(
-            f"Attempting to run auracle returned the following:\n{sp.stderr}",
-            prefix_color=TERMCOLORS["red"],
-        )
-        y_or_n("Do you want to rebuild auracle?")
 
 
-def print_package_info(pkgs: list[str], source: str = ""):
+def print_package_info(pkgs: list, source: str = ""):
     """Print info on number of available packages in PKGS."""
     source = source + " " if source else source
     updates = len(pkgs)
     if updates > 0:
-        fancy_echo(f"{updates} {source}package updates available.")
+        fancy_echo(f"{updates} {source}package update{'s'[:updates^1]} available.")
     else:
         fancy_echo("All packages up-to-date.")
 
@@ -606,170 +644,46 @@ def get_foreign_packages(conf: Config) -> Iterator[pyalpm.Package]:
             yield p
 
 
-def get_aur_pkgs_new_build_req(conf: Config, updates: UpdateInfo) -> list[str]:
-    """Return a list of all AUR packages that require re-compilation because of
-    updates in the official repos."""
-    deps = {}
-    for p in get_foreign_packages(conf):
-        for d in (*p.depends, *p.optdepends):
-            if d not in deps.keys():
-                deps[d] = []
-            deps[d].append(p)
-
-    rebuild_pkgs = set()
-    for pkg in (pkg for pkg in updates["pm_updates"] if pkg in deps.keys()):
-        rebuild_pkgs.add(*deps[pkg])
-    return list(rebuild_pkgs)
-
-
-def retrieve_pkg_revid(pkg: pyalpm.Package) -> str | None:
-    """Extract the revision id from PKG's name. Return None if the name does not include the revision id."""
-    rev_id = pkg.version.rsplit(".")[-1].split("-")[0]
-    # this is our best effort to see if what we retrieved is actually the commit hash
-    if len(rev_id) < 7 or not rev_id.isalnum():
-        return None
-    else:
-        return rev_id
-
-
-async def get_git_source_url(pkg: str) -> str | None:
-    """Find out the source URL for pkg and return it."""
-    proc = await asyncio.create_subprocess_exec(
-        "auracle",
-        "show",
-        pkg,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    stdout, stderr = await proc.communicate()
-    if proc.returncode != 0:
-        print(f"Error retrieving PKGBUILD for {pkg}:\n{stderr.decode()}")
-        return None
-
-    tmpfile = tempfile.NamedTemporaryFile(mode="w", delete=False)
-    with tmpfile as f:
-        f.writelines(stdout.decode())
-
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            "sh",
-            "-c",
-            f'source {tmpfile.name} && set -- $source && echo "$@"',
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        stdout, stderr = await proc.communicate()
-        if proc.returncode != 0:
-            print(
-                f'Could not extract source URLS of package "{pkg}":\n{stderr.decode()}'
-            )
-            return None
-
-    finally:
-        os.unlink(tmpfile.name)
-
-    git_url = [x for x in stdout.decode().split("\n") if x.startswith("git+")]
-    if len(git_url) > 1:
-        print(f"More than one source URL found for {pkg}. Confusion!")
-        return None
-    elif len(git_url) == 0:
-        print(f"No source URL found for {pkg}. Cannot update package.")
-        return None
-    else:
-        return git_url[0][4:]
-
-
-async def check_for_new_git_commit(pkg: str, rev_id: str = "") -> bool:
-    """Check if there's a newer commit than rev_id. False can mean either that
-    the package is up-to-date or that there has been an error with the checking
-    process. Details for these errors are printed to the terminal."""
-    git_url = await get_git_source_url(pkg)
-    # False if we did not get a git URL
-    if not git_url:
-        fancy_echo(
-            f"Skipping update process for {pkg}...", prefix_color=TERMCOLORS["red"]
-        )
-        return False
-    proc = await asyncio.create_subprocess_exec(
-        "git",
-        "ls-remote",
-        git_url,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    stdout, stderr = await proc.communicate()
-    # False if git ls-remote failed
-    if proc.returncode != 0:
-        print(f"Could not access {git_url}:\n{stderr}")
-        fancy_echo(
-            f"Skipping update process for {pkg}...", prefix_color=TERMCOLORS["red"]
-        )
-
-    newest_commit = stdout.decode().split("\n")[0][:7]
-    if newest_commit != rev_id:
-        return True
-    else:
-        return False
-
-
-async def check_for_git_pkg_update(
-    conf: Config, pkg: pyalpm.Package
-) -> tuple[str, bool, str]:
-    """Returns a tuple with the name of PKG a boolean indicating whether the git package should be updated and if the latter is False, a string that explains why it may or may not be updated."""
-    # check first if the most recent update is older than git_interval in the config allows
-    fancy_echo(f"Looking for updates for {pkg.name}...")
-    rev_id = retrieve_pkg_revid(pkg)
-    if pkg.installdate + conf.git_interval_secs > time():
-        return (
-            pkg.name,
-            False,
-            f"{pkg.name} was installed less than {conf.git_interval} days ago.",
-        )
-    # if we were unable to determine the revision id, schedule an update (bit opinionated)
-    elif not rev_id:
-        print(
-            f"Unable to determine latest commit of {pkg.name}. Scheduling an update anyway."
-        )
-        return (pkg.name, True, f"Unable to determine latest commit of {pkg.name}")
-    # finally check if the installed revision is the most recent one
-    new_commit = await check_for_new_git_commit(pkg.name, rev_id=rev_id)
-    reason = (
-        "Newer commit available." if new_commit else "Most recent commit installed."
-    )
-    return (pkg.name, new_commit, reason)
-
-
-async def collect_outdated_git_packages(
-    conf: Config, pkgs: list[pyalpm.Package]
-) -> list[str]:
-    """Asynchronously check for updates for VCS (git) packages. Returns a list
-    with the names of all packages that should be rebuilt (i.e. updated.)"""
-    # collect all installed git packages
-    results = await asyncio.gather(*[check_for_git_pkg_update(conf, p) for p in pkgs])
-    # report the results
-    for pkg, upd, reason in results:
-        prfx_col = TERMCOLORS["green"] if upd else TERMCOLORS["red"]
-        fancy_echo(
-            f"{pkg}{" " if upd else " not "}scheduled for update {TERMCOLORS["default"]} ({reason}).",
-            prefix_color=prfx_col,
-        )
-    return [x[0] for x in results if x[1] is True]
-
-
 async def collect_aur_updates(
-    conf: Config, session: aiohttp.ClientSession
-) -> list[AURPackage]:
+    updates: UpdateInfo, conf: Config, session: aiohttp.ClientSession
+):
     aur_pkgs = [AURPackage(pkg, conf) for pkg in get_foreign_packages(conf)]
     async with asyncio.TaskGroup() as tg:
         for pkg in aur_pkgs:
             tg.create_task(pkg.get_outdated(session))
-            tg.create_task(pkg.get_rebuild_required(conf, session))
 
-    return [pkg for pkg in aur_pkgs if (pkg._is_outdated or pkg._rebuild_required)]
+    updates["aur_updates"] = [pkg for pkg in aur_pkgs if pkg._is_outdated]
+    # check all remaining packages if they require a rebuilt
+    aur_pkgs = list(set(aur_pkgs) - set(updates["aur_updates"]))
+    async with asyncio.TaskGroup() as tg:
+        for pkg in aur_pkgs:
+            tg.create_task(pkg.get_rebuild_required(updates, session))
+    updates["aur_updates"].extend([pkg for pkg in aur_pkgs if pkg._rebuild_required])
+
+
+async def collect_git_updates(
+    updates: UpdateInfo, conf: Config, session: aiohttp.ClientSession
+):
+    """Collect all git packages that should be updated."""
+    aur_upd_names = [x.name for x in updates["aur_updates"]]
+    git_pkgs: list[GitPackage] = []
+    for pkg in conf.pm_local_db.pkgcache:
+        if not pkg.name.endswith("-git"):
+            continue
+        elif pkg.name in aur_upd_names:
+            continue
+        else:
+            git_pkgs.append(GitPackage(pkg.name, conf))
+
+    async with asyncio.TaskGroup() as tg:
+        for pkg in git_pkgs:
+            tg.create_task(pkg.get_outdated_git(conf, session))
+
+    updates["git_updates"] = [pkg for pkg in git_pkgs if pkg._is_outdated]
 
 
 def gather_update_info(
-    conf: Config, updates: UpdateInfo, session: aiohttp.ClientSession
+    updates: UpdateInfo, conf: Config, session: aiohttp.ClientSession
 ):
     """Checks for updates from available sources."""
     headline_echo("Checking for updates in the pacman repos...")
@@ -778,21 +692,12 @@ def gather_update_info(
     print_package_info(updates["pm_updates"])
 
     headline_echo("Checking for updates in the AUR...")
-    updates["aur_updates"] = [
-        AURPackage(pkg, conf) for pkg in get_foreign_packages(conf)
-    ]
-    updates["aur_updates"] += get_aur_pkgs_new_build_req(conf, updates)
-    # remove AUR updates that have been moved to official repos
-    updates["aur_updates"] = [
-        x for x in updates["aur_updates"] if x not in updates["pm_updates"]
-    ]
-    print_package_info(updates["aur_updates"], source="AUR")
+    asyncio.run(collect_aur_updates(updates, conf, session))
+    print_package_info(updates["aur_updates"], "AUR")
 
     headline_echo("Checking for updates for git-based packages...")
-    git_pkgs = [pkg for pkg in conf.pm_local_db.pkgcache if pkg.name.endswith("-git")]
-    # get rid of pkgs already covered in the aur_update list right away
-    git_pkgs = [pkg for pkg in git_pkgs if pkg.name not in updates["aur_updates"]]
-    updates["git_updates"] = asyncio.run(collect_outdated_git_packages(conf, git_pkgs))
+    asyncio.run(collect_git_updates(updates, conf, session))
+    print_package_info(updates["git_updates"], "git-based")
 
 
 def run_pacman_update(updates: UpdateInfo):
@@ -818,42 +723,15 @@ def install_repo_deps(dep_dict: dict[str, list[str]]) -> list[str]:
     return repo_pkgs
 
 
-async def update_aur_packages(
-    conf: Config, updates: UpdateInfo, session: aiohttp.ClientSession
-):
-    headline_echo("Installing updates from the Arch User Repository...")
-    pkgs = [AURPackage(name, conf) for name in updates]
-    tasks = [asyncio.create_task(pkg.get_deps(conf, session)) for pkg in pkgs]
-    await asyncio.gather(*tasks)
-    # throw out any packages that have unretrievable dependencies
-    for p in [pkg for pkg in pkgs if len(pkg.lost_deps) > 0]:
-        fancy_echo(
-            f"Package {p.name} will be skipped because the following of its dependencies are unavailable:"
-        )
-        print("\n".join(p.lost_deps))
-        if not y_or_n("Do you want to continue?"):
-            exit()
-
-    # first we'll install all the dependencies that are available from the repos
-    pm_deps = set()
-    for p in pkgs:
-        pm_deps.update(p.pm_deps)
-    fancy_echo("Installing necessary (build) dependencies from the pacman repos...")
-    call_shell_cmd(f"sudo pacman -S --needed {" ".join(pm_deps)}")
-
-
-def run():
+async def run():
     """Main entry point for program."""
     check_for_programs()
     conf = Config()
     updates = UpdateInfo(pm_updates=[], aur_updates=[], git_updates=[])
     check_mirrorlist(conf)
     check_mailinglist(conf)
-    gather_update_info(conf, updates)
-    if updates["pm_updates"]:
-        run_pacman_update(updates)
-    if updates["aur_updates"]:
-        update_aur_packages(updates)
+    async with aiohttp.ClientSession() as session:
+        gather_update_info(updates, conf, session)
 
 
 # if __name__ == "__main__":
