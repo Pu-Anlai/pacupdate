@@ -179,6 +179,7 @@ class AURPackage:
         self.archive_path: str | None = None
         self.build_dir = os.path.join(BUILDDIR, self.name)
         os.makedirs(self.build_dir)
+        self.built_dependencies: list[AURPackage] | None = None
 
     @property
     def pm_deps(self) -> AURDeps:
@@ -281,6 +282,24 @@ class AURPackage:
             await self.retrieve_package(session)
         await self.makepkg_this()
 
+    async def build_dependencies(self, conf: Config, session: aiohttp.ClientSession):
+        """Build all dependencies specified in self.aur_deps."""
+        await self.get_deps(conf, session)
+        # dependencies need to be built in reverse order and sequentially as
+        # they may depend on each other.
+        for dep in reversed(
+            [
+                *self.aur_deps["depends"],
+                *self.aur_deps["make_depends"],
+                *self.aur_deps["check_depends"],
+            ]
+        ):
+            pkg = AURPackage(dep, conf)
+            await pkg.build(session)
+            if self.built_dependencies is None:
+                self.built_dependencies = []
+            self.built_dependencies.append(pkg)
+
     async def makepkg_this(self):
         proc = await asyncio.create_subprocess_exec(
             "makepkg",
@@ -367,7 +386,7 @@ class AURPackage:
 
 
 class GitPackage(AURPackage):
-    """Subclass of AURPackage with adapted for git packages."""
+    """Subclass of AURPackage adapted for git packages."""
 
     def __init__(self, name: str, conf: Config):
         super().__init__(name, conf)
