@@ -728,18 +728,10 @@ def run_pacman_update(updates: UpdateInfo):
     call_shell_cmd("sudo pacman -Syu")
 
 
-def install_repo_deps(dep_dict: dict[str, list[str]]) -> list[str]:
-    """Extract all the dependencies located in the pacman repos from DEPS and
-    install them. Return a list of all installed packages."""
-    all_lines = []
-    repo_pkgs = []
-    for pkg_output in dep_dict.values():
-        all_lines += pkg_output
-    for pkg in (l.split(" ")[1:] for l in all_lines if l.startswith("REPOS")):
-        repo_pkgs += pkg
-
-    call_shell_cmd(f"sudo pacman -S --asdeps {' '.join(repo_pkgs)}")
-    return repo_pkgs
+async def install_aur_updates(
+    updates: UpdateInfo, conf: Config, session: aiohttp.ClientSession
+):
+    pass
 
 
 async def run():
@@ -751,6 +743,10 @@ async def run():
     check_mailinglist(conf)
     async with aiohttp.ClientSession() as session:
         gather_update_info(updates, conf, session)
+        if len(updates["pm_updates"]) > 0:
+            run_pacman_update(updates)
+        if len([*updates["aur_updates"], *updates["git_updates"]]):
+            await install_aur_updates(updates, conf, session)
 
 
 # if __name__ == "__main__":
