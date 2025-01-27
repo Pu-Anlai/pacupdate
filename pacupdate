@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from html.parser import HTMLParser
 import tempfile
 from time import time
-from typing import Iterator, NoReturn, TypedDict, Literal
+from typing import Iterable, Iterator, NoReturn, TypedDict, Literal
 from urllib.error import URLError
 from urllib.request import urlopen
 import feedparser
@@ -45,6 +45,11 @@ async def make_aur_request(pkg: str, session: aiohttp.ClientSession) -> dict | N
         raise TypeError(
             f"Queried the AUR for single package {pkg} but got multiple results. This should never happen."
         )
+    elif int(resp["resultcount"]) == 0:
+        fancy_echo(
+            f'Package "{pkg}" not available in the AUR.', prefix_color=TERMCOLORS["red"]
+        )
+        return None
     else:
         return resp["results"][0]
 
@@ -62,7 +67,6 @@ class UpdateInfo(TypedDict):
     # TypedDicts are evaluated eagerly. So we need to use string literals here
     # to not create a circular dependency for the type checker.
     aur_updates: list["AURPackage"]
-    git_updates: list["GitPackage"]
 
 
 class FeedPrinter(HTMLParser):
@@ -167,7 +171,7 @@ class AURDeps(TypedDict):
 
 
 class AURPackage:
-    """Representation of an AUR package and some helper methods attached to it."""
+    """Representation of an AUR package with helper methods attached to it."""
 
     def __init__(self, name: str, conf: Config):
         self.name = name
@@ -175,6 +179,7 @@ class AURPackage:
         self.retrieved = False
         self.built = False
         self.has_deps = False
+        self.installed = False
         self.aur_url: str | None = None
         self.archive_path: str | None = None
         self.build_dir = os.path.join(BUILDDIR, self.name)
@@ -216,7 +221,9 @@ class AURPackage:
         """Indicate whether a package has been built or not."""
         return hasattr(self, "pkg_location")
 
-    async def get_outdated(self, session: aiohttp.ClientSession) -> bool | None:
+    async def get_outdated(
+        self, session: aiohttp.ClientSession, *args, **kwargs
+    ) -> bool | None:
         if not hasattr(self, "_is_outdated"):
             resp = await self.get_aurweb_response(session)
             if resp is None:
@@ -377,12 +384,24 @@ class AURPackage:
             return "pm_deps"
         # next check if dep is available from the AUR
         req = await make_aur_request(dep, session)
-        # if not: no idea where it may bes
+        # if not: no idea where it may be
         if req is None:
             return "lost_deps"
         else:
             await self._get_deps(req, conf, session)
             return "aur_deps"
+
+    def install(self, options: list[str] = []):
+        """Attempt to install package. Additional OPTIONS will be passed to pacman."""
+        if not self.built:
+            fancy_echo(
+                f"Package {self.name} was not built succesfully. Skipping installation...",
+                prefix_color=TERMCOLORS["red"],
+            )
+            return
+        for path in self.pkg_location:
+            rc = subprocess.call(["sudo", "pacman", "-U", *options, path])
+            self.installed = rc == 0
 
 
 class GitPackage(AURPackage):
@@ -451,13 +470,14 @@ class GitPackage(AURPackage):
         else:
             return git_url[0][4:]
 
-    async def get_outdated_git(
-        self, conf: Config, session: aiohttp.ClientSession
-    ) -> bool:
+    async def get_outdated(self, session: aiohttp.ClientSession, conf: Config) -> bool:
         """Return True if the package passes requirements for an update"""
         if not hasattr(self, "_is_outdated"):
-            # first check if enough time has passed to warrant checking for an update
-            if self.local_pkg.installdate + conf.git_interval_secs > time():
+            # first do the regular AUR check, i.e. check if an update has been submitted to the AUR
+            if await super().get_outdated(session):
+                self._is_outdated = True  # redundant but more clear
+            # check if enough time has passed to warrant checking for an update
+            elif self.local_pkg.installdate + conf.git_interval_secs > time():
                 self._is_outdated = False
             # if we didn't retrieve an upstream revision id, let's just schedule an update anyway
             elif await self.get_upstream_revision_id(session) is None:
@@ -486,6 +506,7 @@ def y_or_n(prompt: str) -> bool:
     """Prompt the user with the msg PROMPT and return a bool representing the answer."""
     while True:
         response = input(f"{prompt} [Y/n]")
+        print("\n")
         if response.lower() == "y" or response == "":
             return True
         elif response.lower() == "n":
@@ -524,6 +545,12 @@ def call_shell_cmd(cmd: str, stdout=None):
     """Run shell command CMD."""
     if subprocess.call(shlex.split(cmd), stdout=stdout) > 0:
         die(f'Error running command "{cmd}".', exit_code=1)
+
+
+def retain_first_value_only(l: Iterable) -> list:
+    """Take a list and remove all duplicate values beyond their *first* occurence."""
+    seen = set()
+    return [x for x in l if not (x in seen or seen.add(x))]
 
 
 def update_mirrorlist(conf: Config):
@@ -663,45 +690,56 @@ def get_foreign_packages(conf: Config) -> Iterator[pyalpm.Package]:
             yield p
 
 
+def print_package_errors(pkgs: list[str], op: str):
+    if len(pkgs) == 0:
+        return
+    fancy_echo(
+        f"While {op}, an error occured during the processing of the following packages:\n{"\n".join(pkgs)}"
+    )
+    if not y_or_n("Do you want to continue?"):
+        quit()
+
+
 async def collect_aur_updates(
     updates: UpdateInfo, conf: Config, session: aiohttp.ClientSession
 ):
-    aur_pkgs = [AURPackage(pkg, conf) for pkg in get_foreign_packages(conf)]
+    aur_pkgs = []
+    for pkg in get_foreign_packages(conf):
+        if pkg.name.endswith("-git"):
+            aur_pkgs.append(GitPackage(pkg.name, conf))
+        else:
+            aur_pkgs.append(AURPackage(pkg.name, conf))
+
     async with asyncio.TaskGroup() as tg:
         for pkg in aur_pkgs:
-            tg.create_task(pkg.get_outdated(session))
+            tg.create_task(pkg.get_outdated(session, conf))
 
-    updates["aur_updates"] = [pkg for pkg in aur_pkgs if pkg._is_outdated]
-    # check all remaining packages if they require a rebuilt
+    print_package_errors(
+        [x.name for x in aur_pkgs if await x.get_outdated(session, conf) is None],
+        "checking for updates",
+    )
+    updates["aur_updates"] = [
+        pkg for pkg in aur_pkgs if await pkg.get_outdated(session, conf)
+    ]
+    # check if any remaining packages require a rebuilt
     aur_pkgs = list(set(aur_pkgs) - set(updates["aur_updates"]))
     async with asyncio.TaskGroup() as tg:
         for pkg in aur_pkgs:
             tg.create_task(pkg.get_rebuild_required(updates, session))
-    updates["aur_updates"].extend([pkg for pkg in aur_pkgs if pkg._rebuild_required])
+    print_package_errors(
+        [
+            x.name
+            for x in aur_pkgs
+            if await x.get_rebuild_required(updates, session) is None
+        ],
+        "checking if a rebuild is required",
+    )
+    updates["aur_updates"].extend(
+        [pkg for pkg in aur_pkgs if await pkg.get_rebuild_required(updates, session)]
+    )
 
 
-async def collect_git_updates(
-    updates: UpdateInfo, conf: Config, session: aiohttp.ClientSession
-):
-    """Collect all git packages that should be updated."""
-    aur_upd_names = [x.name for x in updates["aur_updates"]]
-    git_pkgs: list[GitPackage] = []
-    for pkg in conf.pm_local_db.pkgcache:
-        if not pkg.name.endswith("-git"):
-            continue
-        elif pkg.name in aur_upd_names:
-            continue
-        else:
-            git_pkgs.append(GitPackage(pkg.name, conf))
-
-    async with asyncio.TaskGroup() as tg:
-        for pkg in git_pkgs:
-            tg.create_task(pkg.get_outdated_git(conf, session))
-
-    updates["git_updates"] = [pkg for pkg in git_pkgs if pkg._is_outdated]
-
-
-def gather_update_info(
+async def gather_update_info(
     updates: UpdateInfo, conf: Config, session: aiohttp.ClientSession
 ):
     """Checks for updates from available sources."""
@@ -711,12 +749,8 @@ def gather_update_info(
     print_package_info(updates["pm_updates"])
 
     headline_echo("Checking for updates in the AUR...")
-    asyncio.run(collect_aur_updates(updates, conf, session))
+    await collect_aur_updates(updates, conf, session)
     print_package_info(updates["aur_updates"], "AUR")
-
-    headline_echo("Checking for updates for git-based packages...")
-    asyncio.run(collect_git_updates(updates, conf, session))
-    print_package_info(updates["git_updates"], "git-based")
 
 
 def run_pacman_update(updates: UpdateInfo):
@@ -728,26 +762,69 @@ def run_pacman_update(updates: UpdateInfo):
     call_shell_cmd("sudo pacman -Syu")
 
 
+def get_all_deps_from_aurdeps(
+    deptype: Literal["pm_deps", "aur_deps", "lost_deps"], pkgs: list[AURPackage]
+) -> list[str]:
+    """Return a list of all pm_deps found in the packages in PKGS."""
+    deps = []
+    for aurdep in (getattr(p, deptype) for p in pkgs):
+        deps.extend(aurdep["depends"])
+        deps.extend(aurdep["make_depends"])
+        deps.extend(aurdep["check_depends"])
+    return deps
+
+
 async def install_aur_updates(
     updates: UpdateInfo, conf: Config, session: aiohttp.ClientSession
 ):
-    pass
+    headline_echo("Installing AUR updates (including git-based packages)...")
+
+    # first install all dependencies available in the pacman repos
+    fancy_echo("Installing dependencies from the pacman repos...")
+    pm_deps = get_all_deps_from_aurdeps("pm_deps", updates["aur_updates"])
+    call_shell_cmd(f"sudo pacman -S --asdeps --needed {' '.join(pm_deps)}")
+
+    fancy_echo("Building dependencies from the AUR...")
+    aur_deps = get_all_deps_from_aurdeps("aur_deps", updates["aur_updates"])
+    aur_deps = retain_first_value_only(reversed(aur_deps))
+    a_d_pkgs: list[AURPackage] = [AURPackage(pkg, conf) for pkg in aur_deps]
+    # build dependencies sequentially in case they depend on each other, there
+    # might be dependencies across packages as well as we removed duplicates
+    # before
+    for pkg in a_d_pkgs:
+        await pkg.build(session)
+
+    fancy_echo("Installing dependencies from the AUR...")
+    for pkg in a_d_pkgs:
+        pkg.install(options=["--asdeps"])
+
+    fancy_echo("Building AUR packages...")
+    async with asyncio.TaskGroup() as tg:
+        for pkg in updates["aur_updates"]:
+            tg.create_task(pkg.build(session))
+
+    fancy_echo("Installing AUR packages...")
+    for pkg in updates["aur_updates"]:
+        pkg.install()
 
 
 async def run():
     """Main entry point for program."""
     check_for_programs()
     conf = Config()
-    updates = UpdateInfo(pm_updates=[], aur_updates=[], git_updates=[])
+    updates = UpdateInfo(pm_updates=[], aur_updates=[])
     check_mirrorlist(conf)
     check_mailinglist(conf)
     async with aiohttp.ClientSession() as session:
-        gather_update_info(updates, conf, session)
+        await gather_update_info(updates, conf, session)
+        upd_count = len([*updates["pm_updates"], *updates["aur_updates"]])
+        if not y_or_n(f"Continue with {upd_count} update{'s'[:upd_count^1]}?"):
+            quit()
         if len(updates["pm_updates"]) > 0:
             run_pacman_update(updates)
-        if len([*updates["aur_updates"], *updates["git_updates"]]):
+        if len([*updates["aur_updates"]]):
             await install_aur_updates(updates, conf, session)
 
 
-# if __name__ == "__main__":
-#     run()
+if __name__ == "__main__":
+    asyncio.run(run())
