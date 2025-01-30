@@ -97,9 +97,35 @@ class Config:
     git_interval: int = getenv_int("PACUPDATE_GIT_INTERVAL") or 14
     pm_db_root: str = os.getenv("PACUPDATE_PM_ROOT") or "/"
     pm_db_path: str = os.getenv("PACUPDATE_PM_DBPATH") or "/var/lib/pacman"
+    pm_conf_path: str = os.getenv("PACUPDATE_PM_CONF") or "/etc/pacman.conf"
 
     def __init__(self):
         self.git_interval_secs = self.git_interval * 60 * 60 * 24
+
+    @property
+    def pm_conf(self) -> ConfigParser:
+        if not hasattr(self, "_pm_conf"):
+            try:
+                self._pm_conf = ConfigParser(allow_no_value=True)
+                self._pm_conf.read(self.pm_conf_path)
+            except FileNotFoundError as e:
+                die(str(e), exit_code=1)
+
+        return self._pm_conf
+
+    @property
+    def pm_log_path(self) -> str:
+        if not hasattr(self, "_pm_log_path"):
+            try:
+                self._pm_log_path = self.pm_conf["options"]["logfile"]
+            except KeyError:
+                self._pm_log_path = os.path.join("/", "var", "log", "pacman.log")
+
+        return self._pm_log_path
+
+    def get_pm_log(self) -> str:
+        with open(self.pm_log_path, mode="r") as f:
+            return f.read()
 
     @property
     def pm_handle(self) -> pyalpm.Handle:
@@ -133,13 +159,7 @@ class Config:
         return self._pm_sync_dbs
 
     def init_pm_sync_db(self):
-        try:
-            cp = ConfigParser(allow_no_value=True)
-            cp.read(os.path.join("/", "etc", "pacman.conf"))
-        except FileNotFoundError as e:
-            die(str(e), exit_code=1)
-
-        repos = cp.sections()
+        repos = self.pm_conf.sections()
         try:
             repos.remove("options")
         except ValueError:
@@ -753,13 +773,33 @@ async def gather_update_info(
     print_package_info(updates["aur_updates"], "AUR")
 
 
-def run_pacman_update(updates: UpdateInfo):
+def print_pacman_warnings(loglines: list[str]):
+    """Take a list of lines from the pacman log file, extract all the warnings
+    from them and print them to the terminal."""
+    warnings = []
+    for l in filter(lambda x: len(x.strip()) != 0, loglines):
+        s = l.split(" ")
+        if s[2].lower().startswith("warning"):
+            warnings.append(" ".join(s[3:]))
+    if len(warnings) != 0:
+        return
+
+    fancy_echo(
+        "Pacman issued the following warnings:", prefix_color=TERMCOLORS["yellow"]
+    )
+    for w in warnings:
+        print(f"- {w}")
+
+
+def run_pacman_update(updates: UpdateInfo, conf: Config):
     """Run `pacman -Syu`."""
+    log_before = conf.get_pm_log().split("\n")
     headline_echo("Installing updates from the pacman repositories...")
     if "archlinux-keyring" in updates["pm_updates"]:
         fancy_echo("Upgrading archlinux-keyring ahead of other packages...")
         call_shell_cmd("sudo pacman -Sy archlinux-keyring")
     call_shell_cmd("sudo pacman -Syu")
+    print_pacman_warnings(conf.get_pm_log().split("\n")[len(log_before) :])
 
 
 def get_all_deps_from_aurdeps(
@@ -821,7 +861,7 @@ async def run():
         if not y_or_n(f"Continue with {upd_count} update{'s'[:upd_count^1]}?"):
             quit()
         if len(updates["pm_updates"]) > 0:
-            run_pacman_update(updates)
+            run_pacman_update(updates, conf)
         if len([*updates["aur_updates"]]):
             await install_aur_updates(updates, conf, session)
 
