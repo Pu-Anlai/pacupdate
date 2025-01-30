@@ -781,7 +781,7 @@ def print_pacman_warnings(loglines: list[str]):
         s = l.split(" ")
         if s[2].lower().startswith("warning"):
             warnings.append(" ".join(s[3:]))
-    if len(warnings) != 0:
+    if len(warnings) == 0:
         return
 
     fancy_echo(
@@ -818,6 +818,10 @@ async def install_aur_updates(
     updates: UpdateInfo, conf: Config, session: aiohttp.ClientSession
 ):
     headline_echo("Installing AUR updates (including git-based packages)...")
+    fancy_echo("Building dependency lists for all packages...")
+    async with asyncio.TaskGroup() as tg:
+        for pkg in updates["aur_updates"]:
+            tg.create_task(pkg.get_deps(conf, session))
 
     # first install all dependencies available in the pacman repos
     fancy_echo("Installing dependencies from the pacman repos...")
