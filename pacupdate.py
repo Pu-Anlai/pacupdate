@@ -317,7 +317,6 @@ class AURPackage:
         _, stderr = await proc.communicate()
         if proc.returncode != 0:
             self.build_error = stderr.decode()
-            return
 
         proc = await asyncio.create_subprocess_exec(
             "makepkg",
@@ -395,6 +394,8 @@ class AURPackage:
     def install(self, options: list[str] = []):
         """Attempt to install package. Additional OPTIONS will be passed to pacman."""
         if not self.built:
+            if self.build_error is not None:
+                print(self.build_error.strip())
             fancy_echo(
                 f"Package {self.name} was not built succesfully. Skipping installation...",
                 prefix_color=TERMCOLORS["red"],
