@@ -171,13 +171,13 @@ class Config:
     @property
     def pm_sync_pkgcache_str(self) -> list[str]:
         if not hasattr(self, "_pm_sync_pkgcache"):
-            self.init_pm_sync_pkgcache()
-        return self._pm_sync_pkgcache
+            self.init_pm_sync_pkgcache_str()
+        return self._pm_sync_pkgcache_str
 
-    def init_pm_sync_pkgcache(self):
-        self._pm_sync_pkgcache = []
+    def init_pm_sync_pkgcache_str(self):
+        self._pm_sync_pkgcache_str = []
         for db in self.pm_sync_dbs:
-            self._pm_sync_pkgcache.extend(pkg.name for pkg in db.pkgcache)
+            self._pm_sync_pkgcache_str.extend(pkg.name for pkg in db.pkgcache)
 
 
 class AURDeps(TypedDict):
