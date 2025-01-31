@@ -1,22 +1,23 @@
-import os
 import asyncio
-from configparser import ConfigParser
+import json
+import os
 import shlex
 import shutil
 import subprocess
+import tarfile
+import tempfile
+from calendar import timegm
+from configparser import ConfigParser
 from dataclasses import dataclass
 from html.parser import HTMLParser
-import tempfile
 from time import time
-from typing import Iterable, Iterator, NoReturn, TypedDict, Literal
+from typing import Iterable, Iterator, Literal, NoReturn, TypedDict
 from urllib.error import URLError
 from urllib.request import urlopen
+
+import aiohttp
 import feedparser
 import pyalpm
-from calendar import timegm
-import json
-import aiohttp
-import tarfile
 
 TERMCOLORS = {
     "red": "\033[31m",
