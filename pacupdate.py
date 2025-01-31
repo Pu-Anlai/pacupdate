@@ -807,9 +807,18 @@ def install_pm_deps(updates: UpdateInfo, conf: Config) -> list[str]:
     """Install all dependencies in UPDATES that are available in the pacman repos
     or do nothing if there are none. Return a list of all dependencies that were found
     """
-    deps: list[str] = get_all_deps_from_aurdeps("pm_deps", updates["aur_updates"])
-    # get rid of all deps that are not in the repos
-    deps = [d for d in deps if d in conf.pm_sync_pkgcache_str]
+    deps: list[str] = []
+
+    for dep in get_all_deps_from_aurdeps("pm_deps", updates["aur_updates"]):
+        # get rid of all deps that are not in the repos
+        if dep in conf.pm_sync_pkgcache_str:
+            continue
+        # also skip all deps that are already installed on the system
+        elif dep in (pkg.name for pkg in conf.pm_local_db.pkgcache):
+            continue
+        else:
+            deps.append(dep)
+
     if len(deps) == 0:
         return []
     fancy_echo("Installing dependencies from the pacman repos...")
@@ -872,7 +881,7 @@ async def install_aur_updates(
                 f'Trying to build package "{pkg.name}" produced the following error:'
             )
             print(pkg.build_error)
-        if not y_or_n("Do you want to continue?"):
+        if len(failed) > 0 and not y_or_n("Do you want to continue?"):
             exit()
 
         fancy_echo("Installing AUR packages...")
