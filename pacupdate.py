@@ -718,26 +718,26 @@ async def collect_aur_updates(
         for pkg in aur_pkgs:
             tg.create_task(pkg.get_outdated(session, conf))
 
-    print_package_errors(
-        [x.name for x in aur_pkgs if await x.get_outdated(session, conf) is None],
-        "checking for updates",
-    )
+    errors = [x.name for x in aur_pkgs if await x.get_outdated(session, conf) is None]
+    print_package_errors(errors, "checking for updates")
+
     updates["aur_updates"] = [
         pkg for pkg in aur_pkgs if await pkg.get_outdated(session, conf)
     ]
+
     # check if any remaining packages require a rebuilt
-    aur_pkgs = list(set(aur_pkgs) - set(updates["aur_updates"]))
+    aur_pkgs = list(set(aur_pkgs) - set(updates["aur_updates"]) - set(errors))
     async with asyncio.TaskGroup() as tg:
         for pkg in aur_pkgs:
             tg.create_task(pkg.get_rebuild_required(updates, conf, session))
-    print_package_errors(
-        [
-            x.name
-            for x in aur_pkgs
-            if await x.get_rebuild_required(updates, session) is None
-        ],
-        "checking if a rebuild is required",
-    )
+
+    errors = [
+        x.name
+        for x in aur_pkgs
+        if await x.get_rebuild_required(updates, conf, session) is None
+    ]
+    print_package_errors(errors, "checking if a rebuild is required")
+
     updates["aur_updates"].extend(
         [
             pkg
