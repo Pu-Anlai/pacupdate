@@ -1,5 +1,3 @@
-#!/usr/bin/env python
-
 import os
 import asyncio
 from configparser import ConfigParser
@@ -46,9 +44,6 @@ async def make_aur_request(pkg: str, session: aiohttp.ClientSession) -> dict | N
             f"Queried the AUR for single package {pkg} but got multiple results. This should never happen."
         )
     elif int(resp["resultcount"]) == 0:
-        fancy_echo(
-            f'Package "{pkg}" not available in the AUR.', prefix_color=TERMCOLORS["red"]
-        )
         return None
     else:
         return resp["results"][0]
@@ -173,7 +168,7 @@ class Config:
             die(str(e), exit_code=1)
 
     @property
-    def pm_sync_pkgcache(self) -> list[pyalpm.Package]:
+    def pm_sync_pkgcache_str(self) -> list[str]:
         if not hasattr(self, "_pm_sync_pkgcache"):
             self.init_pm_sync_pkgcache()
         return self._pm_sync_pkgcache
@@ -181,7 +176,7 @@ class Config:
     def init_pm_sync_pkgcache(self):
         self._pm_sync_pkgcache = []
         for db in self.pm_sync_dbs:
-            self._pm_sync_pkgcache.extend(db.pkgcache)
+            self._pm_sync_pkgcache.extend(pkg.name for pkg in db.pkgcache)
 
 
 class AURDeps(TypedDict):
@@ -204,7 +199,7 @@ class AURPackage:
         self.archive_path: str | None = None
         self.build_dir = os.path.join(BUILDDIR, self.name)
         os.makedirs(self.build_dir)
-        self.built_dependencies: list[AURPackage] | None = None
+        self.build_error = None
 
     @property
     def pm_deps(self) -> AURDeps:
@@ -224,6 +219,8 @@ class AURPackage:
 
     @aur_deps.setter
     def aur_deps(self, value: AURDeps):
+        """Dependency between these will be in ascending order, meaning the
+        packages in the list should be built from beginning to end."""
         self._aur_deps = value
 
     @property
@@ -253,16 +250,16 @@ class AURPackage:
         return self._is_outdated
 
     async def get_rebuild_required(
-        self, updates: UpdateInfo, session: aiohttp.ClientSession
+        self, updates: UpdateInfo, conf: Config, session: aiohttp.ClientSession
     ) -> bool | None:
         """This checks whether any of the package's dependencies have been
         updated in the repos or the AUR. This would lead to it requiring to be
         rebuilt as well."""
         if not hasattr(self, "_rebuild_required"):
-            resp = await self.get_aurweb_response(session)
-            if resp is None:
-                return None
-            for dep in resp["Depends"]:
+            if not self.has_deps:
+                await self.get_deps(conf, session)
+
+            for dep in (*self.pm_deps["depends"], *self.aur_deps):
                 if dep in (
                     *updates["pm_updates"],
                     *(pkg.name for pkg in updates["aur_updates"]),
@@ -309,24 +306,6 @@ class AURPackage:
             await self.retrieve_package(session)
         await self.makepkg_this()
 
-    async def build_dependencies(self, conf: Config, session: aiohttp.ClientSession):
-        """Build all dependencies specified in self.aur_deps."""
-        await self.get_deps(conf, session)
-        # dependencies need to be built in reverse order and sequentially as
-        # they may depend on each other.
-        for dep in reversed(
-            [
-                *self.aur_deps["depends"],
-                *self.aur_deps["make_depends"],
-                *self.aur_deps["check_depends"],
-            ]
-        ):
-            pkg = AURPackage(dep, conf)
-            await pkg.build(session)
-            if self.built_dependencies is None:
-                self.built_dependencies = []
-            self.built_dependencies.append(pkg)
-
     async def makepkg_this(self):
         proc = await asyncio.create_subprocess_exec(
             "makepkg",
@@ -336,7 +315,7 @@ class AURPackage:
         )
         _, stderr = await proc.communicate()
         if proc.returncode != 0:
-            self._build_error = stderr.decode()
+            self.build_error = stderr.decode()
             return
 
         proc = await asyncio.create_subprocess_exec(
@@ -347,7 +326,7 @@ class AURPackage:
         )
         stdout, stderr = await proc.communicate()
         if proc.returncode != 0:
-            self._build_error = stderr.decode()
+            self.build_error = stderr.decode()
             return
 
         self.pkg_location = stdout.decode().split("\n")
@@ -391,8 +370,9 @@ class AURPackage:
         }
         for k, v in trans.items():
             try:
-                for d in resp[k]:
-                    getattr(self, await self._get_dep_source(d, conf, session))[v] = d
+                for dep in resp[k]:
+                    source = await self._get_dep_source(dep, conf, session)
+                    getattr(self, source)[v].append(dep)
             except KeyError:
                 continue
 
@@ -400,7 +380,7 @@ class AURPackage:
         self, dep: str, conf: Config, session: aiohttp.ClientSession
     ) -> Literal["pm_deps", "aur_deps", "lost_deps"]:
         # first check if dep is in the official repos
-        if dep in [pkg.name for pkg in conf.pm_sync_pkgcache]:
+        if dep in [pkg for pkg in conf.pm_sync_pkgcache_str]:
             return "pm_deps"
         # next check if dep is available from the AUR
         req = await make_aur_request(dep, session)
@@ -564,7 +544,10 @@ def print_package_info(pkgs: list, source: str = ""):
 def call_shell_cmd(cmd: str, stdout=None):
     """Run shell command CMD."""
     if subprocess.call(shlex.split(cmd), stdout=stdout) > 0:
-        die(f'Error running command "{cmd}".', exit_code=1)
+        if not y_or_n(
+            f"The following command failed:\n{cmd}\nWould you like to continue? (This may lead to additional errors.)"
+        ):
+            quit()
 
 
 def retain_first_value_only(l: Iterable) -> list:
@@ -745,7 +728,7 @@ async def collect_aur_updates(
     aur_pkgs = list(set(aur_pkgs) - set(updates["aur_updates"]))
     async with asyncio.TaskGroup() as tg:
         for pkg in aur_pkgs:
-            tg.create_task(pkg.get_rebuild_required(updates, session))
+            tg.create_task(pkg.get_rebuild_required(updates, conf, session))
     print_package_errors(
         [
             x.name
@@ -755,7 +738,11 @@ async def collect_aur_updates(
         "checking if a rebuild is required",
     )
     updates["aur_updates"].extend(
-        [pkg for pkg in aur_pkgs if await pkg.get_rebuild_required(updates, session)]
+        [
+            pkg
+            for pkg in aur_pkgs
+            if await pkg.get_rebuild_required(updates, conf, session)
+        ]
     )
 
 
@@ -805,12 +792,57 @@ def run_pacman_update(updates: UpdateInfo, conf: Config):
 def get_all_deps_from_aurdeps(
     deptype: Literal["pm_deps", "aur_deps", "lost_deps"], pkgs: list[AURPackage]
 ) -> list[str]:
-    """Return a list of all pm_deps found in the packages in PKGS."""
+    """Return a list of all dependencies of type DEPTYPE found in the packages
+    in PKGS."""
     deps = []
     for aurdep in (getattr(p, deptype) for p in pkgs):
         deps.extend(aurdep["depends"])
         deps.extend(aurdep["make_depends"])
         deps.extend(aurdep["check_depends"])
+    return deps
+
+
+def install_pm_deps(updates: UpdateInfo, conf: Config) -> list[str]:
+    """Install all dependencies in UPDATES that are available in the pacman repos
+    or do nothing if there are none. Return a list of all dependencies that were found
+    """
+    deps: list[str] = get_all_deps_from_aurdeps("pm_deps", updates["aur_updates"])
+    # get rid of all deps that are not in the repos
+    deps = [d for d in deps if d in conf.pm_sync_pkgcache_str]
+    if len(deps) == 0:
+        return []
+    fancy_echo("Installing dependencies from the pacman repos...")
+    call_shell_cmd(f"sudo pacman -S --asdeps --needed {' '.join(deps)}")
+    return deps
+
+
+def remove_installed_dependencies(deps: list[str]):
+    """Remove all packages in DEPS that are no longer required by any other package."""
+    call_shell_cmd(f"sudo pacman -Ru {" ".join(deps)}")
+
+
+async def install_aur_deps(
+    updates: UpdateInfo, conf: Config, session: aiohttp.ClientSession
+) -> list[str]:
+    """Build and install all AUR dependencies in UPDATES or do nothing if there
+    are none. Return a list of all the dependecies that were collected."""
+    deps: list[str] = get_all_deps_from_aurdeps("aur_deps", updates["aur_updates"])
+    if len(deps) == 0:
+        return []
+
+    fancy_echo("Building dependencies from the AUR...")
+    deps = retain_first_value_only(deps)
+    dep_pkgs: list[AURPackage] = [AURPackage(pkg, conf) for pkg in deps]
+    # build dependencies sequentially in case they depend on each other, there
+    # might be dependencies across packages as well as we removed duplicates
+    # before
+    for pkg in dep_pkgs:
+        await pkg.build(session)
+
+    fancy_echo("Installing dependencies from the AUR...")
+    for pkg in dep_pkgs:
+        pkg.install(options=["--asdeps"])
+
     return deps
 
 
@@ -823,33 +855,29 @@ async def install_aur_updates(
         for pkg in updates["aur_updates"]:
             tg.create_task(pkg.get_deps(conf, session))
 
-    # first install all dependencies available in the pacman repos
-    fancy_echo("Installing dependencies from the pacman repos...")
-    pm_deps = get_all_deps_from_aurdeps("pm_deps", updates["aur_updates"])
-    call_shell_cmd(f"sudo pacman -S --asdeps --needed {' '.join(pm_deps)}")
+    deps = []
+    try:
+        deps += install_pm_deps(updates, conf)
+        deps += await install_aur_deps(updates, conf, session)
 
-    fancy_echo("Building dependencies from the AUR...")
-    aur_deps = get_all_deps_from_aurdeps("aur_deps", updates["aur_updates"])
-    aur_deps = retain_first_value_only(reversed(aur_deps))
-    a_d_pkgs: list[AURPackage] = [AURPackage(pkg, conf) for pkg in aur_deps]
-    # build dependencies sequentially in case they depend on each other, there
-    # might be dependencies across packages as well as we removed duplicates
-    # before
-    for pkg in a_d_pkgs:
-        await pkg.build(session)
+        fancy_echo("Building AUR packages...")
+        async with asyncio.TaskGroup() as tg:
+            for pkg in updates["aur_updates"]:
+                tg.create_task(pkg.build(session))
+        failed: list[AURPackage] = [pkg for pkg in deps if not pkg.built]
+        for pkg in failed:
+            fancy_echo(
+                f'Trying to build package "{pkg.name}" produced the following error:'
+            )
+            print(pkg.build_error)
+        if not y_or_n("Do you want to continue?"):
+            exit()
 
-    fancy_echo("Installing dependencies from the AUR...")
-    for pkg in a_d_pkgs:
-        pkg.install(options=["--asdeps"])
-
-    fancy_echo("Building AUR packages...")
-    async with asyncio.TaskGroup() as tg:
+        fancy_echo("Installing AUR packages...")
         for pkg in updates["aur_updates"]:
-            tg.create_task(pkg.build(session))
-
-    fancy_echo("Installing AUR packages...")
-    for pkg in updates["aur_updates"]:
-        pkg.install()
+            pkg.install()
+    finally:
+        remove_installed_dependencies(deps)
 
 
 async def run():
