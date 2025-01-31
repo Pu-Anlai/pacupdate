@@ -819,7 +819,8 @@ def install_pm_deps(updates: UpdateInfo, conf: Config) -> list[str]:
 
 def remove_installed_dependencies(deps: list[str]):
     """Remove all packages in DEPS that are no longer required by any other package."""
-    call_shell_cmd(f"sudo pacman -Ru {" ".join(deps)}")
+    if len(deps) > 0:
+        call_shell_cmd(f"sudo pacman -Ru {" ".join(deps)}")
 
 
 async def install_aur_deps(
