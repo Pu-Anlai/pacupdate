@@ -900,4 +900,7 @@ async def run():
 
 
 if __name__ == "__main__":
-    asyncio.run(run())
+    try:
+        asyncio.run(run())
+    except KeyboardInterrupt:
+        die("Aborted by user.", exit_code=1)
