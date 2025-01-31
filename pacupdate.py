@@ -506,9 +506,9 @@ def fancy_echo(
 def y_or_n(prompt: str) -> bool:
     """Prompt the user with the msg PROMPT and return a bool representing the answer."""
     while True:
-        response = input(f"{prompt} [Y/n]")
-        print("\n")
+        response = input(f"{prompt} [Y/n] ")
         if response.lower() == "y" or response == "":
+            print("\n", end="")
             return True
         elif response.lower() == "n":
             return False
