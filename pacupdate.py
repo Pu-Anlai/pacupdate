@@ -247,7 +247,7 @@ class AURPackage:
             if resp is None:
                 return None
             else:
-                self._is_outdated = self.local_version == resp["Version"]
+                self._is_outdated = self.local_version != resp["Version"]
         return self._is_outdated
 
     async def get_rebuild_required(
