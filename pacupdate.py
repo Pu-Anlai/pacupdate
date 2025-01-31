@@ -508,7 +508,6 @@ def y_or_n(prompt: str) -> bool:
     while True:
         response = input(f"{prompt} [Y/n] ")
         if response.lower() == "y" or response == "":
-            print("\n", end="")
             return True
         elif response.lower() == "n":
             return False
@@ -698,8 +697,9 @@ def print_package_errors(pkgs: list[str], op: str):
     if len(pkgs) == 0:
         return
     fancy_echo(
-        f"While {op}, an error occured during the processing of the following packages:\n{"\n".join(pkgs)}"
+        f"While {op}, an error occured during the processing of the following packages:"
     )
+    print("\n".join(pkgs))
     if not y_or_n("Do you want to continue?"):
         quit()
 
