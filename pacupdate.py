@@ -890,6 +890,7 @@ async def install_aur_updates(
             pkg.install()
     finally:
         remove_installed_dependencies(deps)
+        shutil.rmtree(BUILDDIR)
 
 
 async def run():
