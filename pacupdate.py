@@ -331,8 +331,9 @@ class AURPackage:
         if proc.returncode != 0:
             self.build_error = stderr.decode()
 
-        self.pkg_location = stdout.decode().split("\n")
-        self.built = True
+        self.pkg_location = list(filter(os.path.exists, stdout.decode().split("\n")))
+        if len(self.pkg_location) > 0:
+            self.built = True
 
     async def retrieve_package(self, session: aiohttp.ClientSession):
         """Download and extract package from URL_PATH. URLPath is specified in the Aurweb response object."""
