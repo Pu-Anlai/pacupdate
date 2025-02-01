@@ -5,9 +5,14 @@ from typing import NoReturn
 
 import aiohttp
 
-from .shared import fancy_echo
-from .structs import TERMCOLORS
-
+TERMCOLORS = {
+    "red": "\033[31m",
+    "green": "\033[32m",
+    "yellow": "\033[33m",
+    "blue": "\033[34m",
+    "bold": "\033[1m",
+    "default": "\033[0m",
+}
 BUILDDIR = mkdtemp()
 
 

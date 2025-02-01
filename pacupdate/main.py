@@ -15,9 +15,8 @@ import aiohttp
 import feedparser
 import pyalpm
 
-from .aurpkgs import AURPackage, GitPackage
-from .shared import BUILDDIR, die, fancy_echo, headline_echo, y_or_n
-from .structs import TERMCOLORS, Config, UpdateInfo
+from .shared import BUILDDIR, die, fancy_echo, headline_echo, y_or_n, TERMCOLORS
+from .structs import Config, UpdateInfo, AURPackage, GitPackage
 
 
 class FeedPrinter(HTMLParser):
