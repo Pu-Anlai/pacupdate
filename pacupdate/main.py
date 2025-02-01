@@ -408,6 +408,9 @@ async def run():
     async with aiohttp.ClientSession() as session:
         await gather_update_info(updates, conf, session)
         upd_count = len([*updates["pm_updates"], *updates["aur_updates"]])
+        if upd_count == 0:
+            fancy_echo("Nothing to do.")
+            quit()
         if not y_or_n(f"Continue with {upd_count} update{'s'[:upd_count^1]}?"):
             quit()
         if len(updates["pm_updates"]) > 0:
