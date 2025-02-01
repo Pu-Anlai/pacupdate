@@ -416,7 +416,7 @@ async def run():
             await install_aur_updates(updates, conf, session)
 
 
-def main():
+def start():
     try:
         asyncio.run(run())
     except KeyboardInterrupt:
