@@ -323,13 +323,13 @@ class AURPackage:
         proc = await asyncio.create_subprocess_exec(
             "makepkg",
             "--packagelist",
+            cwd=os.path.join(self.build_dir, self.name),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
         stdout, stderr = await proc.communicate()
         if proc.returncode != 0:
             self.build_error = stderr.decode()
-            return
 
         self.pkg_location = stdout.decode().split("\n")
         self.built = True
