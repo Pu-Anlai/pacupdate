@@ -14,9 +14,10 @@ from urllib.request import urlopen
 import aiohttp
 import feedparser
 import pyalpm
+from packaging.version import Version
 
-from .shared import BUILDDIR, die, fancy_echo, headline_echo, y_or_n, TERMCOLORS
-from .structs import Config, UpdateInfo, AURPackage, GitPackage
+from .shared import BUILDDIR, TERMCOLORS, die, fancy_echo, headline_echo, y_or_n
+from .structs import AURPackage, Config, GitPackage, UpdateInfo
 
 
 class FeedPrinter(HTMLParser):
@@ -309,18 +310,42 @@ def get_all_deps_from_aurdeps(
     return deps
 
 
+def is_provided(dep: str, conf: Config) -> bool:
+    """Return True if DEP is provided by any package installed on the system."""
+    dep_split = dep.split("=")
+    dep_ver = "0"
+    if len(dep_split) > 1:
+        dep = dep_split[0]
+        dep_ver = dep_split[1]
+
+    for prov in (name for pkg in conf.pm_local_db.pkgcache for name in pkg.provides):
+        prov_split = prov.split("=")
+        prov_ver = f"1{dep_ver}"
+        if len(prov_split) > 1:
+            prov = prov_split[0]
+            prov_ver = prov_split[1]
+        if not prov == dep:
+            continue
+        else:
+            return Version(prov_ver) >= Version(dep_ver)
+    else:
+        return False
+
+
 def install_pm_deps(updates: UpdateInfo, conf: Config) -> list[str]:
     """Install all dependencies in UPDATES that are available in the pacman repos
     or do nothing if there are none. Return a list of all dependencies that were found
     """
     deps: list[str] = []
-
     for dep in get_all_deps_from_aurdeps("pm_deps", updates["aur_updates"]):
         # get rid of all deps that are not in the repos
-        if dep in conf.pm_sync_pkgcache_str:
+        if dep not in conf.pm_sync_pkgcache_str:
             continue
         # also skip all deps that are already installed on the system
         elif dep in (pkg.name for pkg in conf.pm_local_db.pkgcache):
+            continue
+        # then skip all deps that are provided by other installed packages
+        elif is_provided(dep, conf):
             continue
         else:
             deps.append(dep)
@@ -335,6 +360,7 @@ def install_pm_deps(updates: UpdateInfo, conf: Config) -> list[str]:
 def remove_installed_dependencies(deps: list[str]):
     """Remove all packages in DEPS that are no longer required by any other package."""
     if len(deps) > 0:
+        fancy_echo("Removing build dependencies no longer needed...")
         call_shell_cmd(f"sudo pacman -Ru {" ".join(deps)}")
 
 
@@ -372,7 +398,7 @@ async def install_aur_updates(
         for pkg in updates["aur_updates"]:
             tg.create_task(pkg.get_deps(conf, session))
 
-    deps = []
+    deps: list[str] = []
     try:
         deps += install_pm_deps(updates, conf)
         deps += await install_aur_deps(updates, conf, session)
@@ -381,14 +407,18 @@ async def install_aur_updates(
         async with asyncio.TaskGroup() as tg:
             for pkg in updates["aur_updates"]:
                 tg.create_task(pkg.build(session))
-        failed: list[AURPackage] = [pkg for pkg in deps if not pkg.built]
-        for pkg in failed:
+        failed: list[str] = [
+            pkg.name for pkg in updates["aur_updates"] if not pkg.built
+        ]
+        if len(failed) > 0:
             fancy_echo(
-                f'Trying to build package "{pkg.name}" produced the following error:'
+                f"The following dependencies were not built successfully: {", ".join(failed)}.",
+                prefix_color=TERMCOLORS["red"],
             )
-            print(pkg.build_error)
-        if len(failed) > 0 and not y_or_n("Do you want to continue?"):
-            exit()
+            if not y_or_n(
+                "Do you want to continue? (This will likely lead to more errors.)"
+            ):
+                quit()
 
         fancy_echo("Installing AUR packages...")
         for pkg in updates["aur_updates"]:
