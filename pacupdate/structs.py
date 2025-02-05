@@ -342,9 +342,9 @@ class AURPackage:
         """Attempt to install package. Additional OPTIONS will be passed to pacman."""
         if not self.built:
             if self.build_error is not None:
-                print(self.build_error.strip())
+                self.build_error = self.build_error.strip()
             fancy_echo(
-                f"Package {self.name} was not built succesfully. Skipping installation...",
+                f"Package {self.name} was not built succesfully:\n{TERMCOLORS["default"]}{self.build_error}\nSkipping installation...",
                 prefix_color=TERMCOLORS["red"],
             )
             return
