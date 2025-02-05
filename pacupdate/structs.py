@@ -344,7 +344,7 @@ class AURPackage:
             if self.build_error is not None:
                 self.build_error = self.build_error.strip()
             fancy_echo(
-                f"Package {self.name} was not built succesfully:\n{TERMCOLORS["default"]}{self.build_error}\nSkipping installation...",
+                f"Package {self.name} was not built successfully:\n{TERMCOLORS["default"]}{self.build_error}\nSkipping installation...",
                 prefix_color=TERMCOLORS["red"],
             )
             return
