@@ -254,6 +254,7 @@ class AURPackage:
         await self.makepkg_this()
 
     async def makepkg_this(self):
+        fancy_echo(f"Running makepkg on {self.name}...")
         proc = await asyncio.create_subprocess_exec(
             "makepkg",
             cwd=os.path.join(self.build_dir, self.name),
@@ -263,6 +264,7 @@ class AURPackage:
         _, stderr = await proc.communicate()
         if proc.returncode != 0:
             self.build_error = stderr.decode()
+        fancy_echo(f"Finished building {self.name}.")
 
         proc = await asyncio.create_subprocess_exec(
             "makepkg",
