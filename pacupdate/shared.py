@@ -25,13 +25,13 @@ def getenv_int(env: str) -> int | None:
 
 
 async def make_aur_request(pkg: str, session: aiohttp.ClientSession) -> dict | None:
-    async with session.get(
-        f"https://aur.archlinux.org/rpc/v5/info?arg[]={pkg}"
-    ) as resp:
-        r = await resp.text()
     try:
-        resp = json.loads(r)
-    except json.JSONDecodeError:
+        async with session.get(
+            f"https://aur.archlinux.org/rpc/v5/info?arg[]={pkg}"
+        ) as resp:
+            r = await resp.text()
+            resp = json.loads(r)
+    except (json.JSONDecodeError, aiohttp.ClientError):
         return None
 
     if int(resp["resultcount"]) > 1:
