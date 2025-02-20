@@ -321,7 +321,9 @@ class AURPackage:
             try:
                 for dep in resp[k]:
                     source = await self._get_dep_source(dep, conf, session)
-                    getattr(self, source)[v].append(dep)
+                    target = getattr(self, source)[v]
+                    if dep not in target:
+                        target.append(dep)
             except KeyError:
                 continue
 
