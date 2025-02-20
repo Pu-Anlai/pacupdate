@@ -1,0 +1,30 @@
+[project]
+name = "pacupdate"
+version = "0.1.0"
+description = "\"Update script for pacman-based package environments\""
+authors = [
+    {name = "Pu Anlai",email = "inspectormustache@users.noreply.github.com"}
+]
+license = {text = "MIT"}
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "aiohttp (>=3.11.12,<4.0.0)",
+    "feedparser (>=6.0.11,<7.0.0)",
+    "pyalpm (>=0.10.6,<0.11.0)",
+    "packaging (>=24.2,<25.0)"
+]
+
+[project.scripts]
+pacupdate = "pacupdate.main:start"
+
+[tool.poetry]
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^8.3.4"
+aioresponses = "^0.7.8"
+pytest-asyncio = "^0.24.0"
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"
