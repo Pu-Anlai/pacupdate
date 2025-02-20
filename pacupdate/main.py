@@ -361,7 +361,7 @@ def remove_installed_dependencies(deps: list[str]):
     """Remove all packages in DEPS that are no longer required by any other package."""
     if len(deps) > 0:
         fancy_echo("Removing build dependencies no longer needed...")
-        call_shell_cmd(f"sudo pacman -Ru {" ".join(deps)}")
+        call_shell_cmd(f"sudo pacman -Rus {" ".join(deps)}")
 
 
 async def install_aur_deps(
