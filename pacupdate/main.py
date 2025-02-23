@@ -7,7 +7,7 @@ import tempfile
 from calendar import timegm
 from html.parser import HTMLParser
 from time import time
-from typing import Iterable, Iterator, Literal
+from typing import Iterator, Literal
 from urllib.error import URLError
 from urllib.request import urlopen
 
@@ -55,12 +55,6 @@ def call_shell_cmd(cmd: str, stdout=None):
             f"The following command failed:\n{cmd}\nWould you like to continue? (This may lead to additional errors.)"
         ):
             quit()
-
-
-def retain_first_value_only(l: Iterable) -> list:
-    """Take a list and remove all duplicate values beyond their *first* occurence."""
-    seen = set()
-    return [x for x in l if not (x in seen or seen.add(x))]
 
 
 def update_mirrorlist(conf: Config):
@@ -374,7 +368,6 @@ async def install_aur_deps(
         return []
 
     fancy_echo("Building dependencies from the AUR...")
-    deps = retain_first_value_only(deps)
     dep_pkgs: list[AURPackage] = [AURPackage(pkg, conf) for pkg in deps]
     # build dependencies sequentially in case they depend on each other, there
     # might be dependencies across packages as well as we removed duplicates
