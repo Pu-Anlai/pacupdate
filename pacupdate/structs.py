@@ -145,6 +145,7 @@ class AURPackage:
         self.build_dir = os.path.join(BUILDDIR, self.name)
         os.makedirs(self.build_dir)
         self.build_error = None
+        self.error_msg = ""
 
     @property
     def pm_deps(self) -> AURDeps:
@@ -189,6 +190,7 @@ class AURPackage:
         if not hasattr(self, "_is_outdated"):
             resp = await self.get_aurweb_response(session)
             if resp is None:
+                self.error_msg = "Package not found in AUR."
                 return None
             else:
                 self._is_outdated = (
@@ -225,6 +227,7 @@ class AURPackage:
     def get_local_version(self, conf: Config) -> str | None:
         pkg = conf.pm_local_db.get_pkg(self.name)
         if pkg is None:
+            self.error_msg = "Package not found in local database."
             return None
         else:
             return pkg.version
@@ -371,6 +374,7 @@ class GitPackage(AURPackage):
         rev_id = version.rsplit(".")[-1].split("-")[0]
         # this is the best we can do to check if what we got is actually a commit hash
         if len(rev_id) < 7 or not rev_id.isalnum():
+            self.error_msg = "Unable to determine local revision id."
             return None
         else:
             return rev_id
@@ -381,13 +385,18 @@ class GitPackage(AURPackage):
         if not hasattr(self, "_us_rev_id"):
             await self.retrieve_package(session)
             if not self.retrieved:
+                self.error_msg = "Unable to download package from AUR."
                 return None
             pkgbuild = os.path.join(self.build_dir, self.name, "PKGBUILD")
             git_url = await self._get_source_from_pkgbuild(pkgbuild)
             if git_url is None:
+                self.error_msg = "Unable to retrieve upstream url from PKGBUILD."
                 return None
             git_log = await self._git_ls_remote(git_url)
             if git_log is None:
+                self.error_msg = (
+                    "Unable to retrieve upstream log for package's git repo."
+                )
                 return None
             else:
                 self._us_rev_id = git_log.split("\n")[0][:7]

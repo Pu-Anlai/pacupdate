@@ -194,13 +194,16 @@ def get_foreign_packages(conf: Config) -> Iterator[pyalpm.Package]:
             yield p
 
 
-def print_package_errors(pkgs: list[str], op: str):
+def print_package_errors(pkgs: list[AURPackage], op: str):
     if len(pkgs) == 0:
         return
     fancy_echo(
         f"While {op}, an error occured during the processing of the following packages:"
     )
-    print("\n".join(pkgs))
+    for p in pkgs:
+        print(p.name)
+        if p.error_msg:
+            print(f"--> {p.error_msg}")
     if not y_or_n("Do you want to continue?"):
         quit()
 
@@ -219,7 +222,7 @@ async def collect_aur_updates(
         for pkg in aur_pkgs:
             tg.create_task(pkg.get_outdated(session, conf))
 
-    errors = [x.name for x in aur_pkgs if await x.get_outdated(session, conf) is None]
+    errors = [x for x in aur_pkgs if await x.get_outdated(session, conf) is None]
     print_package_errors(errors, "checking for updates")
 
     updates["aur_updates"] = [
@@ -233,7 +236,7 @@ async def collect_aur_updates(
             tg.create_task(pkg.get_rebuild_required(updates, conf, session))
 
     errors = [
-        x.name
+        x
         for x in aur_pkgs
         if await x.get_rebuild_required(updates, conf, session) is None
     ]
