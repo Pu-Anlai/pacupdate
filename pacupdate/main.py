@@ -1,5 +1,6 @@
 import asyncio
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -20,10 +21,10 @@ from .shared import (
     BUILDDIR,
     TERMCOLORS,
     die,
+    error_y_or_n,
     fancy_echo,
     headline_echo,
     y_or_n,
-    error_y_or_n,
 )
 from .structs import AURPackage, Config, GitPackage, UpdateInfo
 
@@ -273,33 +274,13 @@ async def gather_update_info(
     print_package_info(updates["aur_updates"], "AUR")
 
 
-def print_pacman_warnings(loglines: list[str]):
-    """Take a list of lines from the pacman log file, extract all the warnings
-    from them and print them to the terminal."""
-    warnings = []
-    for l in filter(lambda x: len(x.strip()) != 0, loglines):
-        s = l.split(" ")
-        if s[2].lower().startswith("warning"):
-            warnings.append(" ".join(s[3:]))
-    if len(warnings) == 0:
-        return
-
-    fancy_echo(
-        "Pacman issued the following warnings:", prefix_color=TERMCOLORS["yellow"]
-    )
-    for w in warnings:
-        print(f"- {w}")
-
-
-def run_pacman_update(updates: UpdateInfo, conf: Config):
+def run_pacman_update(updates: UpdateInfo):
     """Run `pacman -Syu`."""
-    log_before = conf.get_pm_log().split("\n")
     headline_echo("Installing updates from the pacman repositories...")
     if "archlinux-keyring" in updates["pm_updates"]:
         fancy_echo("Upgrading archlinux-keyring ahead of other packages...")
         call_shell_cmd("sudo pacman -Sy archlinux-keyring")
     call_shell_cmd("sudo pacman -Syu")
-    print_pacman_warnings(conf.get_pm_log().split("\n")[len(log_before) :])
 
 
 def get_all_deps_from_aurdeps(
@@ -429,6 +410,38 @@ async def install_aur_updates(
         shutil.rmtree(BUILDDIR)
 
 
+def get_log_diff_warnings(log1: list[str], log2: list[str]) -> list[str]:
+    diff = log2[len(log1) :]
+    print(diff)
+    warnings = []
+    regex = re.compile(r"^\S+\s\[ALPM\]\swarning:\s(.+)$")
+    for m in map(regex.fullmatch, diff):
+        if m:
+            warnings.append(m.group(1))
+    return warnings
+
+
+def show_pacman_warnings(conf: Config):
+    """
+    Compare the current pacman log with the one cached in CONF and display any new warnings.
+    """
+    if not (old_log := conf._pm_log):
+        return  # no error message needed as it was given earlier
+    if not (new_log := conf.pm_log):
+        if not error_y_or_n(f"Unable to access pacman log at {conf.pm_log_path}."):
+            quit()
+        else:
+            return
+
+    if warnings := get_log_diff_warnings(old_log, new_log):
+        fancy_echo(
+            f"Pacman issued the following warnings:\n{"\n".join(warnings)}",
+            prefix_color=TERMCOLORS["yellow"],
+        )
+        if not y_or_n("Continue?"):
+            quit()
+
+
 async def run():
     """Main entry point for program."""
     check_for_programs()
@@ -436,6 +449,14 @@ async def run():
     updates = UpdateInfo(pm_updates=[], aur_updates=[])
     check_mirrorlist(conf)
     check_mailinglist(conf)
+
+    if not conf.pm_log:  # initiate _pm_log field
+        if not error_y_or_n(
+            f"Unable to access pacman log at {conf.pm_log_path}.",
+            prompt="Would you like to continue? (Warnings from the pacman log will not be collected.)",
+        ):
+            quit()
+
     async with aiohttp.ClientSession() as session:
         await gather_update_info(updates, conf, session)
         upd_count = len([*updates["pm_updates"], *updates["aur_updates"]])
@@ -445,7 +466,8 @@ async def run():
         if not y_or_n(f"Continue with {upd_count} update{'s'[:upd_count^1]}?"):
             quit()
         if len(updates["pm_updates"]) > 0:
-            run_pacman_update(updates, conf)
+            run_pacman_update(updates)
+            show_pacman_warnings(conf)
         if len([*updates["aur_updates"]]):
             await install_aur_updates(updates, conf, session)
 
@@ -455,3 +477,6 @@ def start():
         asyncio.run(run())
     except KeyboardInterrupt:
         die("Aborted by user.", exit_code=1)
+
+
+""""""
