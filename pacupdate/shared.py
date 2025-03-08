@@ -65,6 +65,12 @@ def y_or_n(prompt: str) -> bool:
             return False
 
 
+def error_y_or_n(error: str, prompt: str = "Do you want to continue?") -> bool:
+    """Prompt the user with the msg PROMPT and return a bool representing the answer."""
+    fancy_echo(error, prefix_color=TERMCOLORS["red"])
+    return y_or_n(prompt)
+
+
 def headline_echo(msg: str, color: str = TERMCOLORS["green"], leading_nl: bool = True):
     prefix = "\n==>" if leading_nl else "==>"
     fancy_echo(msg, prefix=prefix, prefix_color=color)

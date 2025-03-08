@@ -16,7 +16,15 @@ import feedparser
 import pyalpm
 from packaging.version import Version
 
-from .shared import BUILDDIR, TERMCOLORS, die, fancy_echo, headline_echo, y_or_n
+from .shared import (
+    BUILDDIR,
+    TERMCOLORS,
+    die,
+    fancy_echo,
+    headline_echo,
+    y_or_n,
+    error_y_or_n,
+)
 from .structs import AURPackage, Config, GitPackage, UpdateInfo
 
 
@@ -51,8 +59,9 @@ def print_package_info(pkgs: list, source: str = ""):
 def call_shell_cmd(cmd: str, stdout=None):
     """Run shell command CMD."""
     if subprocess.call(shlex.split(cmd), stdout=stdout) > 0:
-        if not y_or_n(
-            f"The following command failed:\n{cmd}\nWould you like to continue? (This may lead to additional errors.)"
+        if not error_y_or_n(
+            f"The following command failed:\n{cmd}\n",
+            prompt="Would you like to continue? (This may lead to additional errors.)",
         ):
             quit()
 
@@ -113,11 +122,7 @@ def get_mailing_list_entries(conf: Config) -> list[feedparser.util.FeedParserDic
         )
         return list(entries)
     except Exception as e:
-        fancy_echo(
-            f"There was a an error parsing the Arch RSS feed:\n{e}.",
-            prefix_color=TERMCOLORS["red"],
-        )
-        if y_or_n("Do you want to continue?"):
+        if error_y_or_n(f"There was a an error parsing the Arch RSS feed:\n{e}."):
             return list()
         else:
             exit(1)
@@ -197,14 +202,17 @@ def get_foreign_packages(conf: Config) -> Iterator[pyalpm.Package]:
 def print_package_errors(pkgs: list[AURPackage], op: str):
     if len(pkgs) == 0:
         return
-    fancy_echo(
-        f"While {op}, an error occured during the processing of the following packages:"
-    )
+
+    pkg_errors = []
     for p in pkgs:
-        print(p.name)
-        if p.error_msg:
-            print(f"--> {p.error_msg}")
-    if not y_or_n("Do you want to continue?"):
+        pkg_errors.append(
+            "{pkg}{msg}".format(
+                pkg=p.name, msg=f"\n-->{p.error_msg}" if p.error_msg else ""
+            )
+        )
+    if not error_y_or_n(
+        f"While {op}, an error occured during the processing of the following packages:\n{"\n".join(pkg_errors)}"
+    ):
         quit()
 
 
@@ -407,12 +415,9 @@ async def install_aur_updates(
             pkg.name for pkg in updates["aur_updates"] if not pkg.built
         ]
         if len(failed) > 0:
-            fancy_echo(
+            if not error_y_or_n(
                 f"The following dependencies were not built successfully: {", ".join(failed)}.",
-                prefix_color=TERMCOLORS["red"],
-            )
-            if not y_or_n(
-                "Do you want to continue? (This will likely lead to more errors.)"
+                prompt="Do you want to continue? (This will likely lead to more errors.)",
             ):
                 quit()
 
