@@ -69,9 +69,15 @@ class Config:
 
         return self._pm_log_path
 
-    def get_pm_log(self) -> str:
-        with open(self.pm_log_path, mode="r") as f:
-            return f.read()
+    @property
+    def pm_log(self) -> list[str] | None:
+        if not hasattr(self, "_pm_log"):
+            try:
+                with open(self.pm_log_path, mode="r") as f:
+                    self._pm_log = f.readlines()
+            except OSError:
+                self._pm_log = None
+        return self._pm_log
 
     @property
     def pm_handle(self) -> pyalpm.Handle:
