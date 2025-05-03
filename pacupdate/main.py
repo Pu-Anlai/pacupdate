@@ -8,7 +8,7 @@ import tempfile
 from calendar import timegm
 from html.parser import HTMLParser
 from time import time
-from typing import Iterator, Literal
+from typing import Iterator, Literal, TypedDict
 from urllib.error import URLError
 from urllib.request import urlopen
 
@@ -27,6 +27,11 @@ from .shared import (
     y_or_n,
 )
 from .structs import AURPackage, Config, GitPackage, UpdateInfo
+
+
+class MixedDeps(TypedDict):
+    pm_deps: list[str]
+    aur_deps: list[AURPackage]
 
 
 class FeedPrinter(HTMLParser):
@@ -208,7 +213,7 @@ def print_package_errors(pkgs: list[AURPackage], op: str):
     for p in pkgs:
         pkg_errors.append(
             "{pkg}{msg}".format(
-                pkg=p.name, msg=f"\n-->{p.error_msg}" if p.error_msg else ""
+                pkg=p.name, msg=f"\n--> {p.error_msg}" if p.error_msg else ""
             )
         )
     if not error_y_or_n(
@@ -352,7 +357,7 @@ def remove_installed_dependencies(deps: list[str]):
 
 async def install_aur_deps(
     updates: UpdateInfo, conf: Config, session: aiohttp.ClientSession
-) -> list[str]:
+) -> list[AURPackage]:
     """Build and install all AUR dependencies in UPDATES or do nothing if there
     are none. Return a list of all the dependecies that were collected."""
     deps: list[str] = get_all_deps_from_aurdeps("aur_deps", updates["aur_updates"])
@@ -371,7 +376,7 @@ async def install_aur_deps(
     for pkg in dep_pkgs:
         pkg.install(options=["--asdeps"])
 
-    return deps
+    return dep_pkgs
 
 
 async def install_aur_updates(
@@ -383,21 +388,19 @@ async def install_aur_updates(
         for pkg in updates["aur_updates"]:
             tg.create_task(pkg.get_deps(conf, session))
 
-    deps: list[str] = []
+    deps: MixedDeps = MixedDeps(pm_deps=[], aur_deps=[])
     try:
-        deps += install_pm_deps(updates, conf)
-        deps += await install_aur_deps(updates, conf, session)
+        deps["pm_deps"] += install_pm_deps(updates, conf)
+        deps["aur_deps"] += await install_aur_deps(updates, conf, session)
 
         fancy_echo("Building AUR packages...")
         async with asyncio.TaskGroup() as tg:
             for pkg in updates["aur_updates"]:
                 tg.create_task(pkg.build(session))
-        failed: list[str] = [
-            pkg.name for pkg in updates["aur_updates"] if not pkg.built
-        ]
-        if len(failed) > 0:
+        failed_deps: list[str] = [pkg.name for pkg in deps["aur_deps"] if not pkg.built]
+        if len(failed_deps) > 0:
             if not error_y_or_n(
-                f"The following dependencies were not built successfully: {", ".join(failed)}.",
+                f"The following dependencies were not built successfully: {", ".join(failed_deps)}.",
                 prompt="Do you want to continue? (This will likely lead to more errors.)",
             ):
                 quit()
@@ -406,7 +409,11 @@ async def install_aur_updates(
         for pkg in updates["aur_updates"]:
             pkg.install()
     finally:
-        remove_installed_dependencies(deps)
+        str_deps: list[str] = [
+            *deps["pm_deps"],
+            *[pkg.name for pkg in deps["aur_deps"]],
+        ]
+        remove_installed_dependencies(str_deps)
         shutil.rmtree(BUILDDIR)
 
 
@@ -477,6 +484,3 @@ def start():
         asyncio.run(run())
     except KeyboardInterrupt:
         die("Aborted by user.", exit_code=1)
-
-
-""""""
