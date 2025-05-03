@@ -2,3 +2,6 @@ pytest
 pytest-asyncio
 aiohttp
 aioresponses
+hatchling
+build
+twine
