@@ -47,7 +47,6 @@ class Config:
     )
     mirrorlist_interval: int = getenv_int("PACUPDATE_MIRRORLIST_INTERVAL") or 14
     mirrorlist_path: str = "/etc/pacman.d/mirrorlist"
-    curl_timeout: int = getenv_int("PACUPDATE_CURL_TIMEOUT") or 20
     git_interval: int = getenv_int("PACUPDATE_GIT_INTERVAL") or 14
     pm_db_root: str = os.getenv("PACUPDATE_PM_ROOT") or "/"
     pm_db_path: str = os.getenv("PACUPDATE_PM_DBPATH") or "/var/lib/pacman"

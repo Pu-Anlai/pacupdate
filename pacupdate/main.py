@@ -76,7 +76,7 @@ def update_mirrorlist(conf: Config):
     """Replace current mirrorlist with one fetched from archlinux.org."""
 
     try:
-        r = urlopen(conf.mirrorlist_url, timeout=float(conf.curl_timeout))
+        r = urlopen(conf.mirrorlist_url)
         mlist_raw = r.read().decode("utf-8").split("\n")
         r.close()
     except (ValueError, URLError):
