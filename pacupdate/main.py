@@ -419,7 +419,6 @@ async def install_aur_updates(
 
 def get_log_diff_warnings(log1: list[str], log2: list[str]) -> list[str]:
     diff = log2[len(log1) :]
-    print(diff)
     warnings = []
     regex = re.compile(r"^\S+\s\[ALPM\]\swarning:\s(.+)$")
     for m in map(regex.fullmatch, diff):
