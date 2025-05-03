@@ -10,7 +10,15 @@ from typing import Literal, TypedDict
 import aiohttp
 import pyalpm
 
-from .shared import BUILDDIR, TERMCOLORS, die, fancy_echo, getenv_int, make_aur_request
+from .shared import (
+    BUILDDIR,
+    TERMCOLORS,
+    die,
+    error_y_or_n,
+    fancy_echo,
+    getenv_int,
+    make_aur_request,
+)
 
 
 class UpdateInfo(TypedDict):
@@ -356,9 +364,8 @@ class AURPackage:
         if not self.built:
             if self.build_error is not None:
                 self.build_error = self.build_error.strip()
-            fancy_echo(
-                f"Package {self.name} was not built successfully:\n{TERMCOLORS["default"]}{self.build_error}\nSkipping installation...",
-                prefix_color=TERMCOLORS["red"],
+            error_y_or_n(
+                f"Package {self.name} cannot be installed because of the following error during its build process:\n{TERMCOLORS["default"]}{self.build_error}",
             )
             return
         for path in self.pkg_location:
