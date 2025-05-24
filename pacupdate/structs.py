@@ -306,9 +306,18 @@ class AURPackage:
             with open(self.archive_path, "wb") as f:
                 async for chunk in response.content.iter_chunked(512 * 1024):
                     f.write(chunk)
+            if not self.tar_extract():
+                return
+        self.retrieved = True
+
+    def tar_extract(self) -> bool:
+        """Extract tar file at self.archive_path. Return success status"""
+        try:
             with tarfile.open(self.archive_path, "r") as f:
                 f.extractall(path=self.build_dir, filter="tar")
-        self.retrieved = True
+                return True
+        except tarfile.ReadError:
+            return False
 
     async def get_deps(self, conf: Config, session: aiohttp.ClientSession):
         if not self.has_deps:
