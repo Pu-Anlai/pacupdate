@@ -27,7 +27,7 @@ Issues = "https://github.com/Pu-Anlai/pacupdate/issues"
 pacupdate = "pacupdate:start"
 
 [tool.hatch.build.targets.sdist]
-only-include = [
-        "pacupdate/*.py",
-        "tests/*.py"
-        ]
+exclude = [
+    "PKGBUILD",
+    "requirements/",
+]
