@@ -78,5 +78,6 @@ def headline_echo(msg: str, color: str = TERMCOLORS["green"], leading_nl: bool =
 
 def die(msg: str, exit_code: int = 0) -> NoReturn:
     """Print out msg and quit the program with exit code 1."""
+    print()  # newline
     fancy_echo(msg, prefix_color=TERMCOLORS["red"])
     exit(exit_code)

@@ -3,12 +3,15 @@ import os
 import re
 import shlex
 import shutil
+import signal
 import subprocess
+import sys
 import tempfile
 from calendar import timegm
 from html.parser import HTMLParser
 from time import time
-from typing import Iterator, Literal, TypedDict
+from types import FrameType
+from typing import Iterator, Literal, NoReturn, TypedDict
 from urllib.error import URLError
 from urllib.request import urlopen
 
@@ -27,6 +30,13 @@ from .shared import (
     y_or_n,
 )
 from .structs import AURPackage, Config, GitPackage, UpdateInfo
+
+
+def exit_signal_handler(signal: int, frame: FrameType | None) -> NoReturn:
+    die("Aborted by user.", exit_code=1)
+
+
+signal.signal(signal.SIGINT, exit_signal_handler)
 
 
 class MixedDeps(TypedDict):
@@ -487,7 +497,4 @@ async def run():
 
 
 def start():
-    try:
-        asyncio.run(run())
-    except KeyboardInterrupt:
-        die("Aborted by user.", exit_code=1)
+    asyncio.run(run())
