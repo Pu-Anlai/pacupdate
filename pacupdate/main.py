@@ -327,19 +327,10 @@ def install_pm_deps(updates: UpdateInfo, conf: Config) -> list[str]:
     """Install all dependencies in UPDATES that are available in the pacman repos
     or do nothing if there are none. Return a list of all dependencies that were found
     """
-    deps: list[str] = []
-    for dep in get_all_deps_from_aurdeps("pm_deps", updates["aur_updates"]):
-        # get rid of all deps that are not in the repos
-        if dep not in conf.pm_sync_pkgcache_str:
-            continue
-        # also skip all deps that are already installed on the system
-        elif dep in (pkg.name for pkg in conf.pm_local_db.pkgcache):
-            continue
-        # then skip all deps that are provided by other installed packages
-        elif is_provided(dep, conf):
-            continue
-        else:
-            deps.append(dep)
+    deps: list[str] = get_all_deps_from_aurdeps("pm_deps", updates["aur_updates"])
+    # get rid of all deps that are not in the repos
+    deps = [dep for dep in deps if dep not in conf.pm_sync_pkgcache_str]
+    deps = clean_up_deps(deps, conf)
 
     if len(deps) == 0:
         return []
@@ -355,12 +346,29 @@ def remove_installed_dependencies(deps: list[str]):
         call_shell_cmd(f"sudo pacman -Rus {" ".join(deps)}")
 
 
+def clean_up_deps(deps: list[str], conf: Config) -> list[str]:
+    """Remove dep packages from DEPS that do not need to be build/updated."""
+    clean_deps: list[str] = []
+    for d in deps:
+        # skip all deps that are already installed on the system
+        if d in (pkg.name for pkg in conf.pm_local_db.pkgcache):
+            continue
+        # then skip all deps that are provided by other installed packages
+        elif is_provided(d, conf):
+            continue
+        else:
+            clean_deps.append(d)
+
+    return clean_deps
+
+
 async def install_aur_deps(
     updates: UpdateInfo, conf: Config, session: aiohttp.ClientSession
 ) -> list[AURPackage]:
     """Build and install all AUR dependencies in UPDATES or do nothing if there
     are none. Return a list of all the dependecies that were collected."""
     deps: list[str] = get_all_deps_from_aurdeps("aur_deps", updates["aur_updates"])
+    deps = clean_up_deps(deps, conf)
     if len(deps) == 0:
         return []
 
