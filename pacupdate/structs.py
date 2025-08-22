@@ -153,10 +153,9 @@ class AURPackage:
         self.built = False
         self.has_deps = False
         self.installed = False
-        self.aur_url: str | None = None
+        self.url: str | None = None
         self.archive_path: str | None = None
         self.build_dir = os.path.join(BUILDDIR, self.name)
-        os.makedirs(self.build_dir)
         self.build_error = None
         self.error_msg = ""
 
@@ -248,6 +247,7 @@ class AURPackage:
     async def ensure_paths(self, session: aiohttp.ClientSession):
         if not self.archive_path is None:
             return
+        os.makedirs(self.build_dir, exist_ok=True)
         resp = await self.get_aurweb_response(session)
         if resp is None:
             return
@@ -403,6 +403,7 @@ class GitPackage(AURPackage):
     async def get_upstream_revision_id(
         self, session: aiohttp.ClientSession
     ) -> str | None:
+        await self.ensure_paths(session)
         if not hasattr(self, "_us_rev_id"):
             await self.retrieve_package(session)
             if not self.retrieved:
