@@ -343,7 +343,7 @@ def install_pm_deps(updates: UpdateInfo, conf: Config) -> list[str]:
     """
     deps: list[str] = get_all_deps_from_aurdeps("pm_deps", updates["aur_updates"])
     # get rid of all deps that are not in the repos
-    deps = [dep for dep in deps if dep not in conf.pm_sync_pkgcache_str]
+    deps = [dep for dep in deps if dep in conf.pm_sync_pkgcache_str]
     deps = clean_up_deps(deps, conf)
 
     if len(deps) == 0:
@@ -356,7 +356,7 @@ def install_pm_deps(updates: UpdateInfo, conf: Config) -> list[str]:
 def remove_installed_dependencies(deps: list[str]):
     """Remove all packages in DEPS that are no longer required by any other package."""
     if len(deps) > 0:
-        fancy_echo("Removing build dependencies no longer needed...")
+        fancy_echo("Removing build dependencies that are no longer needed...")
         call_shell_cmd(f"sudo pacman -Rus {" ".join(deps)}")
 
 
