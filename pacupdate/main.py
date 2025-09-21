@@ -55,6 +55,10 @@ class FeedPrinter(HTMLParser):
         self.text += data
 
 
+def test_for_root() -> bool:
+    return os.geteuid() == 0
+
+
 def check_for_programs():
     """Checks whether sudo executable is present on the system."""
     for p in ["sudo", "git"]:
@@ -497,4 +501,8 @@ async def run():
 
 
 def start():
+    if test_for_root():
+        fancy_echo("Runing as root.", prefix_color=TERMCOLORS["red"])
+        print("This script should only be run by a regular user.")
+        exit(1)
     asyncio.run(run())
