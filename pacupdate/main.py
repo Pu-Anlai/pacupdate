@@ -5,7 +5,6 @@ import shlex
 import shutil
 import signal
 import subprocess
-import sys
 import tempfile
 from calendar import timegm
 from html.parser import HTMLParser
