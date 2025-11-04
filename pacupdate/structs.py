@@ -265,8 +265,11 @@ class AURPackage:
         if self.url is None or self.archive_path is None:
             return
 
+        await self.retrieve_package(session)
         if not self.retrieved:
-            await self.retrieve_package(session)
+            self.error_msg = "Unable to download package from AUR."
+            return
+
         await self.makepkg_this()
 
     async def makepkg_this(self):
@@ -299,6 +302,8 @@ class AURPackage:
 
     async def retrieve_package(self, session: aiohttp.ClientSession):
         """Download and extract package from URL_PATH. URLPath is specified in the Aurweb response object."""
+        if self.retrieved:
+            return
         await self.ensure_paths(session)
         if self.url is None or self.archive_path is None:
             return
