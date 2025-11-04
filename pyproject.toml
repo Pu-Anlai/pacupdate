@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "pacupdate"
-version = "0.3"
+version = "0.4"
 authors = [
         { name="Pu Anlai", email="inspectormustache@users.noreply.github.com"},
 ]
