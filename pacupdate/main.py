@@ -407,7 +407,8 @@ async def install_aur_deps(
     print_dep_package_errors(failed_builds, "building dependencies for AUR packages")
 
     fancy_echo("Installing dependencies from the AUR...")
-    for pkg in [p for p in dep_pkgs if p.built]:
+    dep_pkgs = [p for p in dep_pkgs if p.built]
+    for pkg in dep_pkgs:
         pkg.install(options=["--asdeps"])
     failed_installs: list[AURPackage] = [p for p in dep_pkgs if not p.installed]
     print_dep_package_errors(
@@ -426,7 +427,8 @@ async def install_aur_pkgs(pkgs: list[AURPackage], session: aiohttp.ClientSessio
     print_package_errors(failed_builds, "building AUR packages")
 
     fancy_echo("Installing AUR packages...")
-    for pkg in [p for p in pkgs if p.built]:
+    pkgs = [p for p in pkgs if p.built]
+    for pkg in pkgs:
         pkg.install()
     failed_installs = [pkg for pkg in pkgs if not pkg.installed]
     print_package_errors(failed_installs, "installing AUR packages")
