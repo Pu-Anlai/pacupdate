@@ -403,13 +403,13 @@ async def install_aur_deps(
     # before
     for pkg in dep_pkgs:
         await pkg.build(session)
-    failed_builds: list[AURPackage] = [pkg for pkg in dep_pkgs if not pkg.built]
+    failed_builds: list[AURPackage] = [p for p in dep_pkgs if not p.built]
     print_dep_package_errors(failed_builds, "building dependencies for AUR packages")
 
     fancy_echo("Installing dependencies from the AUR...")
-    for pkg in dep_pkgs:
+    for pkg in [p for p in dep_pkgs if p.built]:
         pkg.install(options=["--asdeps"])
-    failed_installs: list[AURPackage] = [pkg for pkg in dep_pkgs if not pkg.installed]
+    failed_installs: list[AURPackage] = [p for p in dep_pkgs if not p.installed]
     print_dep_package_errors(
         failed_installs, "installing dependencies for AUR packages"
     )
@@ -422,11 +422,11 @@ async def install_aur_pkgs(pkgs: list[AURPackage], session: aiohttp.ClientSessio
     async with asyncio.TaskGroup() as tg:
         for pkg in pkgs:
             tg.create_task(pkg.build(session))
-    failed_builds = [pkg for pkg in pkgs if not pkg.built]
+    failed_builds = [p for p in pkgs if not p.built]
     print_package_errors(failed_builds, "building AUR packages")
 
     fancy_echo("Installing AUR packages...")
-    for pkg in pkgs:
+    for pkg in [p for p in pkgs if p.built]:
         pkg.install()
     failed_installs = [pkg for pkg in pkgs if not pkg.installed]
     print_package_errors(failed_installs, "installing AUR packages")
