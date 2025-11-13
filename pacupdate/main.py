@@ -218,7 +218,9 @@ def get_foreign_packages(conf: Config) -> Iterator[pyalpm.Package]:
             yield p
 
 
-def print_package_errors(pkgs: list[AURPackage], op: str):
+def print_package_errors(
+    pkgs: list[AURPackage], op: str, prompt: str = "Do you want to continue?"
+):
     if len(pkgs) == 0:
         return
 
@@ -230,9 +232,18 @@ def print_package_errors(pkgs: list[AURPackage], op: str):
             )
         )
     if not error_y_or_n(
-        f"While {op}, an error occured during the processing of the following packages:\n{"\n".join(pkg_errors)}"
+        f"While {op}, an error occured during the processing of the following packages:\n{"\n".join(pkg_errors)}",
+        prompt,
     ):
         quit()
+
+
+def print_dep_package_errors(pkgs: list[AURPackage], op: str):
+    print_package_errors(
+        pkgs,
+        op,
+        prompt="Do you want to continue? (This will likely lead to more errors.)",
+    )
 
 
 async def collect_aur_updates(
@@ -392,12 +403,33 @@ async def install_aur_deps(
     # before
     for pkg in dep_pkgs:
         await pkg.build(session)
+    failed_builds: list[AURPackage] = [pkg for pkg in dep_pkgs if not pkg.built]
+    print_dep_package_errors(failed_builds, "building dependencies for AUR packages")
 
     fancy_echo("Installing dependencies from the AUR...")
     for pkg in dep_pkgs:
         pkg.install(options=["--asdeps"])
+    failed_installs: list[AURPackage] = [pkg for pkg in dep_pkgs if not pkg.installed]
+    print_dep_package_errors(
+        failed_installs, "installing dependencies for AUR packages"
+    )
 
     return dep_pkgs
+
+
+async def install_aur_pkgs(pkgs: list[AURPackage], session: aiohttp.ClientSession):
+    fancy_echo("Building AUR packages...")
+    async with asyncio.TaskGroup() as tg:
+        for pkg in pkgs:
+            tg.create_task(pkg.build(session))
+    failed_builds = [pkg for pkg in pkgs if not pkg.built]
+    print_package_errors(failed_builds, "building AUR packages")
+
+    fancy_echo("Installing AUR packages...")
+    for pkg in pkgs:
+        pkg.install()
+    failed_installs = [pkg for pkg in pkgs if not pkg.installed]
+    print_package_errors(failed_installs, "installing AUR packages")
 
 
 async def install_aur_updates(
@@ -414,21 +446,8 @@ async def install_aur_updates(
         deps["pm_deps"] += install_pm_deps(updates, conf)
         deps["aur_deps"] += await install_aur_deps(updates, conf, session)
 
-        fancy_echo("Building AUR packages...")
-        async with asyncio.TaskGroup() as tg:
-            for pkg in updates["aur_updates"]:
-                tg.create_task(pkg.build(session))
-        failed_deps: list[str] = [pkg.name for pkg in deps["aur_deps"] if not pkg.built]
-        if len(failed_deps) > 0:
-            if not error_y_or_n(
-                f"The following dependencies were not built successfully: {", ".join(failed_deps)}.",
-                prompt="Do you want to continue? (This will likely lead to more errors.)",
-            ):
-                quit()
+        await install_aur_pkgs(updates["aur_updates"], session)
 
-        fancy_echo("Installing AUR packages...")
-        for pkg in updates["aur_updates"]:
-            pkg.install()
     finally:
         str_deps: list[str] = [
             *deps["pm_deps"],

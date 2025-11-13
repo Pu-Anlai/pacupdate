@@ -12,9 +12,7 @@ import pyalpm
 
 from .shared import (
     BUILDDIR,
-    TERMCOLORS,
     die,
-    error_y_or_n,
     fancy_echo,
     getenv_int,
     make_aur_request,
@@ -156,7 +154,6 @@ class AURPackage:
         self.url: str | None = None
         self.archive_path: str | None = None
         self.build_dir = os.path.join(BUILDDIR, self.name)
-        self.build_error = None
         self.error_msg = ""
 
     @property
@@ -282,7 +279,7 @@ class AURPackage:
         )
         _, stderr = await proc.communicate()
         if proc.returncode != 0:
-            self.build_error = stderr.decode()
+            self.error_msg = stderr.decode().strip()
         fancy_echo(f"Finished building {self.name}.")
 
         proc = await asyncio.create_subprocess_exec(
@@ -294,7 +291,7 @@ class AURPackage:
         )
         stdout, stderr = await proc.communicate()
         if proc.returncode != 0:
-            self.build_error = stderr.decode()
+            self.error_msg = stderr.decode().strip()
 
         self.pkg_location = list(filter(os.path.exists, stdout.decode().split("\n")))
         if len(self.pkg_location) > 0:
@@ -374,16 +371,10 @@ class AURPackage:
 
     def install(self, options: list[str] = []):
         """Attempt to install package. Additional OPTIONS will be passed to pacman."""
-        if not self.built:
-            if self.build_error is not None:
-                self.build_error = self.build_error.strip()
-            error_y_or_n(
-                f"Package {self.name} cannot be installed because of the following error during its build process:\n{TERMCOLORS["default"]}{self.build_error}",
-            )
-            return
         for path in self.pkg_location:
             rc = subprocess.call(["sudo", "pacman", "-U", *options, path])
             self.installed = rc == 0
+            self.error_msg = "Installation failed (see terminal output.)"
 
 
 class GitPackage(AURPackage):
