@@ -2,10 +2,10 @@ import asyncio
 import os
 import subprocess
 import tarfile
-from configparser import ConfigParser
-from dataclasses import dataclass
+from configparser import ConfigParser, ParsingError
 from time import time
 from typing import Literal, TypedDict
+from pathlib import Path
 
 import aiohttp
 import pyalpm
@@ -14,7 +14,6 @@ from .shared import (
     BUILDDIR,
     die,
     fancy_echo,
-    getenv_int,
     make_aur_request,
 )
 
@@ -32,26 +31,60 @@ class AURDeps(TypedDict):
     check_depends: list[str]
 
 
-@dataclass
 class Config:
-    """Config object that holds settings set in the environment as well as temporary information."""
-
-    mirrorlist_url: str = (
-        os.getenv("PACUPDATE_MIRRORLIST_URL")
-        or "https://archlinux.org/mirrorlist/?country=all&protocol=http&protocol=https&ip_version=4"
-    )
-    rss_feed_url: str = (
-        os.getenv("PACUPDATE_RSS_FEED_URL") or "https://archlinux.org/feeds/news/"
-    )
-    mirrorlist_interval: int = getenv_int("PACUPDATE_MIRRORLIST_INTERVAL") or 14
-    mirrorlist_path: str = "/etc/pacman.d/mirrorlist"
-    git_interval: int = getenv_int("PACUPDATE_GIT_INTERVAL") or 14
-    pm_db_root: str = os.getenv("PACUPDATE_PM_ROOT") or "/"
-    pm_db_path: str = os.getenv("PACUPDATE_PM_DBPATH") or "/var/lib/pacman"
-    pm_conf_path: str = os.getenv("PACUPDATE_PM_CONF") or "/etc/pacman.conf"
+    """Config object that holds settings from the config file as well as temporary information."""
 
     def __init__(self):
+        self.mirrorlist_url = self.pacupdate_conf.get(
+            "general",
+            "mirrorlist_url",
+            fallback="https://archlinux.org/mirrorlist/?country=all&protocol=http&protocol=https&ip_version=4",
+        )
+        self.rss_feed_url = self.pacupdate_conf.get(
+            "general", "rss_feed_url", fallback="https://archlinux.org/feeds/news/"
+        )
+        self.mirrorlist_interval = self.pacupdate_conf.getint(
+            "general", "mirrorlist_interval", fallback=14
+        )
+        self.mirrorlist_path = self.pacupdate_conf.getint(
+            "general", "mirrorlist_path", fallback=14
+        )
+        self.git_interval = self.pacupdate_conf.getint(
+            "general", "git_interval", fallback=14
+        )
+        self.pm_db_root = self.pacupdate_conf.get(
+            "general", "pacman_db_root", fallback="/"
+        )
+        self.pm_db_path = self.pacupdate_conf.get(
+            "general", "pacman_db_path", fallback="/var/lib/pacman"
+        )
+        self.pm_conf_path = self.pacupdate_conf.get(
+            "general", "pacman_conf_path", fallback="/etc/pacman.conf"
+        )
         self.git_interval_secs = self.git_interval * 60 * 60 * 24
+
+    @property
+    def pacupdate_conf(self):
+        if not hasattr(self, "_pacupdate_conf"):
+            try:
+                self._pacupdate_conf = ConfigParser()
+                self._pacupdate_conf.read(self.pacupdate_conf_path)
+            except ParsingError:
+                raise ParsingError(
+                    f"Error parsing config file at {self.pacupdate_conf_path}."
+                )
+        return self._pacupdate_conf
+
+    @property
+    def pacupdate_conf_path(self):
+        if not hasattr(self, "_pacupdate_conf_path"):
+            if conf_path := os.getenv("XDG_CONFIG_HOME"):
+                self._conf_path = os.path.join(conf_path, "pacupdate", "pacupdate.conf")
+            else:
+                self._conf_path = os.path.join(
+                    Path.home(), ".config", "pacupdate", "pacupdate.conf"
+                )
+        return self._conf_path
 
     @property
     def pm_conf(self) -> ConfigParser:

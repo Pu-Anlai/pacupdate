@@ -13,6 +13,7 @@ from types import FrameType
 from typing import Iterator, Literal, NoReturn, TypedDict
 from urllib.error import URLError
 from urllib.request import urlopen
+from configparser import ParsingError
 
 import aiohttp
 import feedparser
@@ -458,7 +459,13 @@ async def install_aur_updates(
             *[pkg.name for pkg in deps["aur_deps"]],
         ]
         remove_installed_dependencies(str_deps)
-        shutil.rmtree(BUILDDIR)
+        try:
+            shutil.rmtree(BUILDDIR)
+        except PermissionError:
+            fancy_echo(
+                f"Could not remove directory {BUILDDIR}. Try removing it manually.",
+                prefix_color=TERMCOLORS["red"],
+            )
 
 
 def get_log_diff_warnings(log1: list[str], log2: list[str]) -> list[str]:
@@ -495,7 +502,12 @@ def show_pacman_warnings(conf: Config):
 async def run():
     """Main entry point for program."""
     check_for_programs()
-    conf = Config()
+
+    try:
+        conf = Config()
+    except ParsingError as e:
+        die(str(e), exit_code=1)
+
     updates = UpdateInfo(pm_updates=[], aur_updates=[])
     check_mirrorlist(conf)
     check_mailinglist(conf)

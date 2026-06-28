@@ -1,5 +1,4 @@
 import json
-import os
 from tempfile import mkdtemp
 from typing import NoReturn
 
@@ -14,14 +13,6 @@ TERMCOLORS = {
     "default": "\033[0m",
 }
 BUILDDIR = mkdtemp()
-
-
-def getenv_int(env: str) -> int | None:
-    """Cast env to int if possible return None otherwise"""
-    try:
-        return int(os.getenv(env, ""))
-    except ValueError:
-        return None
 
 
 async def make_aur_request(pkg: str, session: aiohttp.ClientSession) -> dict | None:
