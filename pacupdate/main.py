@@ -402,7 +402,7 @@ async def install_aur_deps(
     # might be dependencies across packages as well as we removed duplicates
     # before
     for pkg in dep_pkgs:
-        await pkg.build(session)
+        await pkg.build(conf, session)
     failed_builds: list[AURPackage] = [p for p in dep_pkgs if not p.built]
     print_dep_package_errors(failed_builds, "building dependencies for AUR packages")
 
@@ -418,11 +418,13 @@ async def install_aur_deps(
     return dep_pkgs
 
 
-async def install_aur_pkgs(pkgs: list[AURPackage], session: aiohttp.ClientSession):
+async def install_aur_pkgs(
+    pkgs: list[AURPackage], conf: Config, session: aiohttp.ClientSession
+):
     fancy_echo("Building AUR packages...")
     async with asyncio.TaskGroup() as tg:
         for pkg in pkgs:
-            tg.create_task(pkg.build(session))
+            tg.create_task(pkg.build(conf, session))
     failed_builds = [p for p in pkgs if not p.built]
     print_package_errors(failed_builds, "building AUR packages")
 
@@ -448,7 +450,7 @@ async def install_aur_updates(
         deps["pm_deps"] += install_pm_deps(updates, conf)
         deps["aur_deps"] += await install_aur_deps(updates, conf, session)
 
-        await install_aur_pkgs(updates["aur_updates"], session)
+        await install_aur_pkgs(updates["aur_updates"], conf, session)
 
     finally:
         str_deps: list[str] = [

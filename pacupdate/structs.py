@@ -153,6 +153,7 @@ class AURPackage:
         self.installed = False
         self.url: str | None = None
         self.archive_path: str | None = None
+        self.build_cmd: str = "makepkg"
         self.build_dir = os.path.join(BUILDDIR, self.name)
         self.error_msg = ""
 
@@ -253,7 +254,7 @@ class AURPackage:
             self.build_dir, os.path.basename(resp["URLPath"])
         )
 
-    async def build(self, session: aiohttp.ClientSession):
+    async def build(self, conf: Config, session: aiohttp.ClientSession):
         aurweb_response = await self.get_aurweb_response(session)
         if aurweb_response is None:
             return
@@ -267,12 +268,20 @@ class AURPackage:
             self.error_msg = "Unable to download package from AUR."
             return
 
-        await self.makepkg_this()
+        await self.makepkg_this(conf)
 
-    async def makepkg_this(self):
-        fancy_echo(f"Running makepkg on {self.name}...")
-        proc = await asyncio.create_subprocess_exec(
-            "makepkg",
+    def get_build_cmd(self, conf: Config):
+        """Return a list containing a custom build command if one is specified
+        in the config, otherwise return the default makepkg command."""
+        build_cmd = conf.pm_conf.get("build_commands", self.name, fallback=None)
+        if build_cmd:
+            self.build_cmd = build_cmd
+
+    async def makepkg_this(self, conf: Config):
+        self.get_build_cmd(conf)
+        fancy_echo(f"Running {self.build_cmd} on {self.name}...")
+        proc = await asyncio.create_subprocess_shell(
+            self.build_cmd,
             cwd=os.path.join(self.build_dir, self.name),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
@@ -292,10 +301,15 @@ class AURPackage:
         stdout, stderr = await proc.communicate()
         if proc.returncode != 0:
             self.error_msg = stderr.decode().strip()
+            return
 
         self.pkg_location = list(filter(os.path.exists, stdout.decode().split("\n")))
         if len(self.pkg_location) > 0:
             self.built = True
+        else:
+            self.build_error = "Command '{}' produced no installable packages.".format(
+                " ".join(self.build_cmd)
+            )
 
     async def retrieve_package(self, session: aiohttp.ClientSession):
         """Download and extract package from URL_PATH. URLPath is specified in the Aurweb response object."""
