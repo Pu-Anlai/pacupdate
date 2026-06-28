@@ -47,7 +47,7 @@ class Config:
             "general", "mirrorlist_interval", fallback=14
         )
         self.mirrorlist_path = self.pacupdate_conf.getint(
-            "general", "mirrorlist_path", fallback=14
+            "general", "mirrorlist_path", fallback="/etc/pacman.d/mirrorlist"
         )
         self.git_interval = self.pacupdate_conf.getint(
             "general", "git_interval", fallback=14
