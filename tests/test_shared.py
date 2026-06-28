@@ -1,12 +1,12 @@
 import aiohttp
 import pytest
-from aioresponses import aioresponses
+from aiointercept import aiointercept
 from pacupdate.shared import make_aur_request
 
 
 @pytest.mark.asyncio
 async def test_make_aur_request():
-    with aioresponses() as mock:
+    async with aiointercept(mock_external_urls=True) as mock:
         mock.get(
             "https://aur.archlinux.org/rpc/v5/info?arg[]=valid-package",
             body='{"resultcount":1,"results":[{"Name": "valid-package"}],"type":"multiinfo","version":5}',

@@ -1,12 +1,12 @@
 import aiohttp
 import pytest
-from aioresponses import aioresponses
+from aiointercept import aiointercept
 from pacupdate.structs import AURDeps, AURPackage, Config
 
 
 @pytest.mark.asyncio
 async def test_AURPackage():
-    with aioresponses() as mock:
+    async with aiointercept(mock_external_urls=True) as mock:
         mock.get(
             "https://aur.archlinux.org/rpc/v5/info?arg[]=clightd-git",
             body='{"resultcount":1,"results":[{"Conflicts":["clightd"],"Depends":["ddcutil","libdrm","libiio","libjpeg-turbo","libmodule","libusb","libx11","libxext","linux-api-headers","libxrandr","polkit","systemd-libs","wayland"],"Description":"Bus interface to change screen brightness and capture frames from webcam.","FirstSubmitted":1492337955,"ID":1389403,"Keywords":[],"LastModified":1705783001,"License":["GPL-3.0-or-later"],"Maintainer":"yochananmarqos","MakeDepends":["cmake","git"],"Name":"clightd-git","NumVotes":8,"OutOfDate":null,"PackageBase":"clightd-git","PackageBaseID":121546,"Popularity":0,"Provides":["clightd"],"Submitter":"Nierro","URL":"https://github.com/FedeDP/Clightd","URLPath":"/cgit/aur.git/snapshot/clightd-git.tar.gz","Version":"5.8.r9.g7d447d0-1"}],"type":"multiinfo","version":5}',
