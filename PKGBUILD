@@ -1,6 +1,6 @@
 # Maintainer: Pu Anlai
 pkgname=pacupdate
-pkgver=0.2
+pkgver=0.5
 pkgrel=1
 pkgdesc="Simple but hopefully complete pacman update script"
 arch=('any')
