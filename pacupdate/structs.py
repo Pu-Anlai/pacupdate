@@ -186,7 +186,6 @@ class AURPackage:
         self.installed = False
         self.url: str | None = None
         self.archive_path: str | None = None
-        self.build_cmd: str = "makepkg"
         self.build_dir = os.path.join(BUILDDIR, self.name)
         self.error_msg = ""
 
@@ -303,18 +302,13 @@ class AURPackage:
 
         await self.makepkg_this(conf)
 
-    def get_build_cmd(self, conf: Config):
-        """Return a list containing a custom build command if one is specified
-        in the config, otherwise return the default makepkg command."""
-        build_cmd = conf.pm_conf.get("build_commands", self.name, fallback=None)
-        if build_cmd:
-            self.build_cmd = build_cmd
-
     async def makepkg_this(self, conf: Config):
-        self.get_build_cmd(conf)
-        fancy_echo(f"Running {self.build_cmd} on {self.name}...")
+        build_cmd = conf.pacupdate_conf.get(
+            "build_commands", self.name, fallback="makepkg"
+        )
+        fancy_echo(f"Running {build_cmd} on {self.name}...")
         proc = await asyncio.create_subprocess_shell(
-            self.build_cmd,
+            build_cmd,
             cwd=os.path.join(self.build_dir, self.name),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
@@ -340,8 +334,8 @@ class AURPackage:
         if len(self.pkg_location) > 0:
             self.built = True
         else:
-            self.build_error = "Command '{}' produced no installable packages.".format(
-                " ".join(self.build_cmd)
+            self.build_error = (
+                f"Command '{build_cmd}' produced no installable packages."
             )
 
     async def retrieve_package(self, session: aiohttp.ClientSession):
