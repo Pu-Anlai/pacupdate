@@ -6,14 +6,15 @@ import shutil
 import signal
 import subprocess
 import tempfile
+from argparse import ArgumentParser, Namespace
 from calendar import timegm
+from configparser import ParsingError
 from html.parser import HTMLParser
 from time import time
 from types import FrameType
 from typing import Iterator, Literal, NoReturn, TypedDict
 from urllib.error import URLError
 from urllib.request import urlopen
-from configparser import ParsingError
 
 import aiohttp
 import feedparser
@@ -499,15 +500,49 @@ def show_pacman_warnings(conf: Config):
             quit()
 
 
-async def run():
-    """Main entry point for program."""
-    check_for_programs()
+def init_arg_parser() -> Namespace:
+    parser = ArgumentParser(
+        prog="pacupdate", description="A simple update script for pacman"
+    )
+    parser.add_argument(
+        "-m",
+        "--mirrorlist-update",
+        help="force an update of the pacman mirrorlist",
+        action="store_true",
+        default=False,
+    )
+    parser.add_argument(
+        "-g",
+        "--gitpkg-update",
+        help="temporarily set the interval for git update checks to 0",
+        action="store_true",
+        default=False,
+    )
+    args = parser.parse_args()
+    return args
 
+
+def init_config(args: Namespace) -> Config:
+    """Return a newly created config object with config values overwritten
+    according to flags passed through ARGS."""
     try:
         conf = Config()
     except ParsingError as e:
         die(str(e), exit_code=1)
 
+    if args.mirrorlist_update:
+        conf.mirrorlist_interval = 0
+    if args.gitpkg_update:
+        conf.git_interval_secs = 0
+
+    return conf
+
+
+async def run():
+    """Main entry point for program."""
+    check_for_programs()
+    args = init_arg_parser()
+    conf = init_config(args)
     updates = UpdateInfo(pm_updates=[], aur_updates=[])
     check_mirrorlist(conf)
     check_mailinglist(conf)
