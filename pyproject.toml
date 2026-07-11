@@ -10,7 +10,7 @@ authors = [
 ]
 description = "A pacman update script"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 classifiers = [
             "Programming Language :: Python :: 3 :: Only",
             "Operating System :: POSIX :: Linux",
