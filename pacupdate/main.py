@@ -72,7 +72,7 @@ def print_package_info(pkgs: list, source: str = ""):
     source = source + " " if source else source
     updates = len(pkgs)
     if updates > 0:
-        fancy_echo(f"{updates} {source}package update{'s'[:updates^1]} available.")
+        fancy_echo(f"{updates} {source}package update{'s'[: updates ^ 1]} available.")
     else:
         fancy_echo("All packages up-to-date.")
 
@@ -203,7 +203,7 @@ def check_mailinglist(conf: Config):
     new_entries = get_mailing_list_entries(conf)
     n_e_len = len(new_entries)
 
-    fancy_echo(f"{n_e_len} news item{'s'[:n_e_len^1]}")
+    fancy_echo(f"{n_e_len} news item{'s'[: n_e_len ^ 1]}")
     if n_e_len == 0:
         return
     else:
@@ -234,7 +234,7 @@ def print_package_errors(
             )
         )
     if not error_y_or_n(
-        f"While {op}, an error occured during the processing of the following packages:\n{"\n".join(pkg_errors)}",
+        f"While {op}, an error occured during the processing of the following packages:\n{'\n'.join(pkg_errors)}",
         prompt,
     ):
         quit()
@@ -369,7 +369,7 @@ def remove_installed_dependencies(deps: list[str]):
     """Remove all packages in DEPS that are no longer required by any other package."""
     if len(deps) > 0:
         fancy_echo("Removing build dependencies that are no longer needed...")
-        call_shell_cmd(f"sudo pacman -Rus {" ".join(deps)}")
+        call_shell_cmd(f"sudo pacman -Rus {' '.join(deps)}")
 
 
 def clean_up_deps(deps: list[str], conf: Config) -> list[str]:
@@ -493,7 +493,7 @@ def show_pacman_warnings(conf: Config):
 
     if warnings := get_log_diff_warnings(old_log, new_log):
         fancy_echo(
-            f"Pacman issued the following warnings:\n{"\n".join(warnings)}",
+            f"Pacman issued the following warnings:\n{'\n'.join(warnings)}",
             prefix_color=TERMCOLORS["yellow"],
         )
         if not y_or_n("Continue?"):
@@ -560,7 +560,7 @@ async def run():
         if upd_count == 0:
             fancy_echo("Nothing to do.")
             quit()
-        if not y_or_n(f"Continue with {upd_count} update{'s'[:upd_count^1]}?"):
+        if not y_or_n(f"Continue with {upd_count} update{'s'[: upd_count ^ 1]}?"):
             quit()
         if len(updates["pm_updates"]) > 0:
             run_pacman_update(updates)

@@ -281,7 +281,7 @@ class AURPackage:
         resp = await self.get_aurweb_response(session)
         if resp is None:
             return
-        self.url = f"https://aur.archlinux.org/{resp["URLPath"]}"
+        self.url = f"https://aur.archlinux.org/{resp['URLPath']}"
         self.archive_path = os.path.join(
             self.build_dir, os.path.basename(resp["URLPath"])
         )
