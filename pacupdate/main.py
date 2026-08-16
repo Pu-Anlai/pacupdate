@@ -483,8 +483,9 @@ def show_pacman_warnings(conf: Config):
     """
     Compare the current pacman log with the one cached in CONF and display any new warnings.
     """
-    if not (old_log := conf._pm_log):
+    if not (old_log := conf.pm_log):
         return  # no error message needed as it was given earlier
+    conf.update_log_from_disk()  # update the log with the file from disk
     if not (new_log := conf.pm_log):
         if not error_y_or_n(f"Unable to access pacman log at {conf.pm_log_path}."):
             quit()

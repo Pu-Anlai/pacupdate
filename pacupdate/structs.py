@@ -97,6 +97,14 @@ class Config:
 
         return self._pm_conf
 
+    def update_log_from_disk(self):
+        """Read the pacman log file from disk and store it in self._pm_log."""
+        try:
+            with open(self.pm_log_path, mode="r") as f:
+                self._pm_log = f.readlines()
+        except OSError:
+            self._pm_log = None
+
     @property
     def pm_log_path(self) -> str:
         if not hasattr(self, "_pm_log_path"):
@@ -110,11 +118,7 @@ class Config:
     @property
     def pm_log(self) -> list[str] | None:
         if not hasattr(self, "_pm_log"):
-            try:
-                with open(self.pm_log_path, mode="r") as f:
-                    self._pm_log = f.readlines()
-            except OSError:
-                self._pm_log = None
+            self.update_log_from_disk()
         return self._pm_log
 
     @property
